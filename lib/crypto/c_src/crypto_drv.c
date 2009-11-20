@@ -238,6 +238,7 @@ static ErlDrvEntry crypto_driver_entry = {
 #define DRV_BF_OFB64_ENCRYPT     63
 #define DRV_BF_CBC_ENCRYPT       64
 #define DRV_BF_CBC_DECRYPT       65
+#define DRV_RSA_GENERATE_KEY     80
 
 /* #define DRV_CBC_IDEA_ENCRYPT    34 */
 /* #define DRV_CBC_IDEA_DECRYPT    35 */
@@ -384,10 +385,12 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
     int data_len, dsa_p_len, dsa_q_len;
     int dsa_s_len, dsa_g_len, dsa_y_len;
     int rsa_e_len, rsa_n_len, rsa_d_len, padding;
+    int rsa_keylen;
     int or_mask;
     int prime_len, generator;
     int privkey_len, pubkey_len, dh_p_len, dh_g_len;
     unsigned int rsa_s_len, j;
+    unsigned long f4=RSA_F4;
     char *key, *key2, *dbuf;
     unsigned char *p;
     const_DES_cblock *des_key, *des_key2, *des_key3;
@@ -1303,6 +1306,47 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
 	   return 1;
        }
        break;
+
+    case DRV_RSA_GENERATE_KEY:
+      /* buf = <<KeyLen:32/integer>> */
+      rsa = RSA_new();
+      
+      bn_rsa_genkey = BN_new();
+      BN_set_word(bn_rsa_genkey, f4);
+      
+      rsa_keylen=get_int32(buf);
+      
+      BIO *bio_private_pem = BIO_new(BIO_s_mem());
+      BIO *bio_public_pem = BIO_new(BIO_s_mem());
+      
+      if (RSA_generate_key_ex(rsa, rsa_keylen, bn_rsa_genkey, NULL)) {
+        PEM_write_bio_RSA_PUBKEY(bio_public_pem,rsa);
+        PEM_write_bio_RSAPrivateKey(bio_private_pem,rsa,NULL,NULL,0,NULL,NULL);
+        
+        unsigned char *private_pemdata;
+        unsigned char *public_pemdata;
+        int private_pemlen = BIO_get_mem_data(bio_private_pem, &private_pemdata);
+        int public_pemlen = BIO_get_mem_data(bio_public_pem, &public_pemdata);
+        
+        dlen = sizeof(int)+private_pemlen+sizeof(int)+public_pemlen;
+        bin = return_binary(rbuf, rlen, dlen);
+        private_pemdata[private_pemlen]=0;
+        public_pemdata[public_pemlen]=0;
+        
+        put_int32(bin, private_pemlen);
+        bin+=sizeof(int);
+        strncpy(bin, private_pemdata, private_pemlen);
+        bin+=private_pemlen;
+        put_int32(bin, public_pemlen);
+        bin+=sizeof(int);
+        strncpy(bin, public_pemdata, public_pemlen);
+      }
+      
+      BIO_free_all(bio_private_pem);
+      BIO_free_all(bio_public_pem);
+      BN_free(bn_rsa_genkey);
+      RSA_free(rsa);
+      return i;
 
     case DRV_CBC_AES128_ENCRYPT:
     case DRV_CBC_AES256_ENCRYPT:

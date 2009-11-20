@@ -50,7 +50,7 @@
 -export([aes_cbc_128_encrypt/3, aes_cbc_128_decrypt/3]).
 -export([aes_cbc_256_encrypt/3, aes_cbc_256_decrypt/3]).
 -export([aes_cbc_ivec/1]).
-
+-export([rsa_generate_keypair/1]).
 -export([dh_generate_parameters/2, dh_check/1]). %% Testing see below
 
 -define(INFO,		 0).
@@ -123,6 +123,7 @@
 -define(BF_OFB64_ENCRYPT, 63).
 -define(BF_CBC_ENCRYPT,   64).
 -define(BF_CBC_DECRYPT,   65).
+-define(RSA_GENERATE_KEY, 80).
 
 %% -define(IDEA_CBC_ENCRYPT, 34).
 %% -define(IDEA_CBC_DECRYPT, 35).
@@ -487,7 +488,11 @@ rsa_public_decrypt(BinMesg, Key, Padding) ->
 	1 -> Signature;
 	0 -> erlang:error(decrypt_failed, [BinMesg,Key, Padding])
     end.
-    
+
+rsa_generate_keypair(KeyLen) when is_integer(KeyLen) ->
+    <<PemPrivateLen:32/integer, PemPrivateKey:PemPrivateLen/binary, PemPublicLen:32/integer, PemPublicKey:PemPublicLen/binary>> = control(?RSA_GENERATE_KEY, [<<KeyLen:32>>]),
+    [{public_key,PemPublicKey},{private_key,PemPrivateKey}].
+
 %%
 %% AES - with 128 or 256 bit key in cipher block chaining mode (CBC)
 %%

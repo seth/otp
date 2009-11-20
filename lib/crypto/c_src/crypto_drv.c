@@ -219,7 +219,7 @@ static ErlDrvEntry crypto_driver_entry = {
 #define DRV_MD4_UPDATE          49
 #define DRV_MD4_FINAL           50
 
-#define SSL_VERSION_0_9_8 0
+#define SSL_VERSION_0_9_8 1
 #if SSL_VERSION_0_9_8
 #define DRV_SHA256              51
 #define DRV_SHA256_INIT         52
@@ -1626,7 +1626,7 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
        if (len != SHA512_CTX_LEN)
 	  return -1;
        memcpy(&sha512_ctx, buf, SHA512_CTX_LEN); /* XXX Use buf only? */
-       bin = return_binary(rbuf,rlen,SHA512_LEN));
+       bin = return_binary(rbuf,rlen,SHA512_LEN);
        SHA512_Final(bin, &sha512_ctx);
        return SHA512_LEN;		
 #endif

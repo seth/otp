@@ -51,6 +51,7 @@
 -export([aes_cbc_256_encrypt/3, aes_cbc_256_decrypt/3]).
 -export([aes_cbc_ivec/1]).
 -export([rsa_generate_keypair/1]).
+-export([x509_make_cert/1]).
 -export([dh_generate_parameters/2, dh_check/1]). %% Testing see below
 
 -define(INFO,		 0).
@@ -77,7 +78,6 @@
 -define(MOD_EXP,	 21).
 -define(DSS_VERIFY,	 22).
 -define(RSA_VERIFY_SHA,	 23).
-%-define(RSA_VERIFY_MD5,	 35).
 -define(AES_CBC_128_ENCRYPT, 24).
 -define(AES_CBC_128_DECRYPT, 25).
 -define(XOR,		 26).
@@ -89,7 +89,6 @@
 -define(AES_CBC_256_ENCRYPT, 32).
 -define(AES_CBC_256_DECRYPT, 33).
 -define(INFO_LIB,34).
-%-define(RSA_VERIFY_SHA,	 23).
 -define(RSA_VERIFY_MD5,	 35).
 -define(RSA_SIGN_SHA,    36).
 -define(RSA_SIGN_MD5,    37).
@@ -124,6 +123,7 @@
 -define(BF_CBC_ENCRYPT,   64).
 -define(BF_CBC_DECRYPT,   65).
 -define(RSA_GENERATE_KEY, 80).
+-define(X509_MAKE_CERT, 81).
 
 %% -define(IDEA_CBC_ENCRYPT, 34).
 %% -define(IDEA_CBC_DECRYPT, 35).
@@ -152,6 +152,7 @@
 		    rc2_40_cbc_encrypt, rc2_40_cbc_decrypt,
 		    %% idea_cbc_encrypt, idea_cbc_decrypt,
 		    aes_cbc_256_encrypt, aes_cbc_256_decrypt,
+            rsa_generate_keypair, x509_make_cert,
 		    info_lib]).
 
 start() ->
@@ -489,9 +490,24 @@ rsa_public_decrypt(BinMesg, Key, Padding) ->
 	0 -> erlang:error(decrypt_failed, [BinMesg,Key, Padding])
     end.
 
+%%--------------------------------------------------------------------
+%% @doc Generates an RSA public, private keypair
+%% @spec
+%% @end
+%%--------------------------------------------------------------------
+
 rsa_generate_keypair(KeyLen) when is_integer(KeyLen) ->
     <<PemPrivateLen:32/integer, PemPrivateKey:PemPrivateLen/binary, PemPublicLen:32/integer, PemPublicKey:PemPublicLen/binary>> = control(?RSA_GENERATE_KEY, [<<KeyLen:32>>]),
     [{public_key,PemPublicKey},{private_key,PemPrivateKey}].
+
+%%--------------------------------------------------------------------
+%% @doc Generates an X509 certificate
+%% @spec
+%% @end
+%%--------------------------------------------------------------------
+x509_make_cert(KeyLen) when is_integer(KeyLen) ->
+    <<PemPrivateLen:32/integer, PemPrivateKey:PemPrivateLen/binary, X509CertLen:32/integer, X509Cert:X509CertLen/binary>> = control(?X509_MAKE_CERT, [<<KeyLen:32>>]),
+    [{private_key, PemPrivateKey},{x509_cert, X509Cert}].
 
 %%
 %% AES - with 128 or 256 bit key in cipher block chaining mode (CBC)

@@ -54,6 +54,7 @@
 #include <openssl/rc2.h>
 #include <openssl/blowfish.h>
 #include <openssl/rand.h>
+#include <openssl/pem.h>
 
 #ifdef VALGRIND
 #  include <valgrind/memcheck.h>
@@ -239,6 +240,7 @@ static ErlDrvEntry crypto_driver_entry = {
 #define DRV_BF_CBC_ENCRYPT       64
 #define DRV_BF_CBC_DECRYPT       65
 #define DRV_RSA_GENERATE_KEY     80
+#define DRV_X509_MAKE_CERT       81
 
 /* #define DRV_CBC_IDEA_ENCRYPT    34 */
 /* #define DRV_CBC_IDEA_DECRYPT    35 */
@@ -1347,6 +1349,83 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
       BN_free(bn_rsa_genkey);
       RSA_free(rsa);
       return i;
+
+    case DRV_X509_MAKE_CERT:
+      {
+        int serial = 1;
+        RSA* pRSA = RSA_new();
+        int days = 365;
+        
+        bn_rsa_genkey = BN_new();
+        BN_set_word(bn_rsa_genkey, f4);
+        
+        rsa_keylen=get_int32(buf);
+        
+        fprintf(stderr, "generating RSA keypair\n");
+        if (RSA_generate_key_ex(pRSA, rsa_keylen, bn_rsa_genkey, NULL)) {
+          fprintf(stderr, "generated RSA keypair.  generating EVP and X509 structs\n");
+          EVP_PKEY* pEVP = EVP_PKEY_new();
+          X509* pX509 = X509_new();
+          X509_NAME* pX509Name = NULL;
+          fprintf(stderr, "assigning X509 values\n");
+          if(pEVP && pX509){
+            EVP_PKEY_assign_RSA(pEVP, pRSA);
+            X509_set_version(pX509, 3);
+            ASN1_INTEGER_set(X509_get_serialNumber(pX509),serial);
+            X509_gmtime_adj(X509_get_notBefore(pX509),0);
+            X509_gmtime_adj(X509_get_notAfter(pX509),(long)60*60*24*days);
+            X509_set_pubkey(pX509,pEVP);
+            fprintf(stderr, "get_subject_name\n");
+            pX509Name =X509_get_subject_name(pX509);
+            
+            /* This function creates and adds the entry, working out the
+             * correct string type and performing checks on its length.
+             * Normally we'd check the return value for errors...
+             */
+            X509_NAME_add_entry_by_txt(pX509Name,"C",
+                                       MBSTRING_ASC, "UK", -1, -1, 0);
+            X509_NAME_add_entry_by_txt(pX509Name,"CN",
+                                       MBSTRING_ASC, "OpenSSL Group", -1, -1, 0);
+            
+            /* Its self signed so set the issuer name to be the same as the
+             * subject.
+             */
+            fprintf(stderr, "setting issuer name\n");
+            X509_set_issuer_name(pX509,pX509Name);
+            
+            BIO *bio_private_pem = BIO_new(BIO_s_mem());
+            BIO *bio_x509 = BIO_new(BIO_s_mem());
+            PEM_write_bio_RSAPrivateKey(bio_private_pem,pRSA,NULL,NULL,0,NULL,NULL);
+            PEM_write_bio_X509(bio_x509, pX509);
+            
+            unsigned char *private_pemdata;
+            unsigned char *x509data;
+            int private_pemlen = BIO_get_mem_data(bio_private_pem, &private_pemdata);
+            int x509len = BIO_get_mem_data(bio_x509, &x509data);
+            
+            dlen = sizeof(int)+private_pemlen+sizeof(int)+x509len;
+            bin = return_binary(rbuf, rlen, dlen);
+            private_pemdata[private_pemlen]=0;
+            x509data[x509len]=0;
+            
+            put_int32(bin, private_pemlen);
+            bin+=sizeof(int);
+            strncpy(bin, private_pemdata, private_pemlen);
+            bin+=private_pemlen;
+            put_int32(bin, x509len);
+            bin+=sizeof(int);
+            strncpy(bin, x509data, x509len);
+            BIO_free_all(bio_private_pem);
+            BIO_free_all(bio_x509);
+          }
+        }
+        
+        
+        if (bn_rsa_genkey) BN_free(bn_rsa_genkey);
+        if (pRSA) RSA_free(pRSA);
+        
+        return i;
+      }
 
     case DRV_CBC_AES128_ENCRYPT:
     case DRV_CBC_AES256_ENCRYPT:

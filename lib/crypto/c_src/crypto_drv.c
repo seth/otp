@@ -397,7 +397,7 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
     unsigned char *p;
     const_DES_cblock *des_key, *des_key2, *des_key3;
     const unsigned char *des_dbuf;
-    BIGNUM *bn_from, *bn_to, *bn_rand, *bn_result;
+    BIGNUM *bn_from, *bn_to, *bn_rand, *bn_result, *bn_rsa_genkey;
     BIGNUM *bn_base, *bn_exponent, *bn_modulo;
     BIGNUM *dsa_p, *dsa_q, *dsa_g, *dsa_y;
     BIGNUM *rsa_n, *rsa_e, *rsa_d;
@@ -1361,13 +1361,10 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
         
         rsa_keylen=get_int32(buf);
         
-        fprintf(stderr, "generating RSA keypair\n");
         if (RSA_generate_key_ex(pRSA, rsa_keylen, bn_rsa_genkey, NULL)) {
-          fprintf(stderr, "generated RSA keypair.  generating EVP and X509 structs\n");
           EVP_PKEY* pEVP = EVP_PKEY_new();
           X509* pX509 = X509_new();
           X509_NAME* pX509Name = NULL;
-          fprintf(stderr, "assigning X509 values\n");
           if(pEVP && pX509){
             EVP_PKEY_assign_RSA(pEVP, pRSA);
             X509_set_version(pX509, 3);
@@ -1375,7 +1372,6 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
             X509_gmtime_adj(X509_get_notBefore(pX509),0);
             X509_gmtime_adj(X509_get_notAfter(pX509),(long)60*60*24*days);
             X509_set_pubkey(pX509,pEVP);
-            fprintf(stderr, "get_subject_name\n");
             pX509Name =X509_get_subject_name(pX509);
             
             /* This function creates and adds the entry, working out the
@@ -1390,7 +1386,6 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
             /* Its self signed so set the issuer name to be the same as the
              * subject.
              */
-            fprintf(stderr, "setting issuer name\n");
             X509_set_issuer_name(pX509,pX509Name);
             
             BIO *bio_private_pem = BIO_new(BIO_s_mem());

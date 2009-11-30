@@ -505,10 +505,17 @@ rsa_generate_keypair(KeyLen) when is_integer(KeyLen) ->
 %% @spec
 %% @end
 %%--------------------------------------------------------------------
-x509_make_cert(KeyLen) when is_integer(KeyLen) ->
-    <<PemPrivateLen:32/integer, PemPrivateKey:PemPrivateLen/binary, X509CertLen:32/integer, X509Cert:X509CertLen/binary>> = control(?X509_MAKE_CERT, [<<KeyLen:32>>]),
-    [{private_key, PemPrivateKey},{x509_cert, X509Cert}].
-
+% x509_make_cert(Expiry, Keylen, Subject) when is_integer(Expiry) and is_integer(Keylen) and is_list(Subject) ->
+%     case proplists:get_value(subject, Subject, undefined) of
+%         undefined ->
+%             throw({error,{"Certificate Request requires subject information"}});
+%         SubjectInfoList ->
+%             <<PemPrivateLen:32/integer, PemPrivateKey:PemPrivateLen/binary, X509CertLen:32/integer, X509Cert:X509CertLen/binary>> = control(?X509_MAKE_CERT, [term_to_binary([{expiry, Expiry}, {keylen, Keylen}, SubjectInfoList])]),
+%             [{private_key, PemPrivateKey}, {x509_cert, X509Cert}]
+%     end.
+x509_make_cert([{expiry, ExpiryDays}, {keylen, KeylenBits}, {subject, Subject}] = X509Descriptor) when is_integer(ExpiryDays) and is_integer(KeylenBits) and is_list(Subject) ->
+    <<PemPrivateLen:32/integer, PemPrivateKey:PemPrivateLen/binary, X509CertLen:32/integer, X509Cert:X509CertLen/binary>> = control(?X509_MAKE_CERT, [term_to_binary(X509Descriptor)]),
+    [{private_key, PemPrivateKey}, {x509_cert, X509Cert}].
 %%
 %% AES - with 128 or 256 bit key in cipher block chaining mode (CBC)
 %%

@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "erl_driver.h"
+#include "ei.h"
 
 #define OPENSSL_THREAD_DEFINES
 #include <openssl/opensslconf.h>
@@ -92,6 +93,10 @@
 #  define INLINE
 #endif
 
+typedef struct _x509_subject_entry {
+  char* name;
+  char* value;
+} x509_subject_entry;
 
 #define get_int32(s) ((((unsigned char*) (s))[0] << 24) | \
                       (((unsigned char*) (s))[1] << 16) | \
@@ -130,6 +135,7 @@ static void hmac_md5(char *key, int klen, char *dbuf, int dlen,
                      char *hmacbuf);
 static void hmac_sha1(char *key, int klen, char *dbuf, int dlen, 
                       char *hmacbuf);
+static int x509_decode_subject_entries(int *expiry, int *keylen, x509_subject_entry **subject_entries, char *buf);
 
 static ErlDrvEntry crypto_driver_entry = {
     init,
@@ -354,26 +360,26 @@ static void stop(ErlDrvData drv_data)
 static INLINE unsigned char* return_binary(char **rbuf, int rlen, int len)
 {
     if (len <= rlen) {
-	return (unsigned char *) *rbuf;
+      return (unsigned char *) *rbuf;
     }
     else {
-	ErlDrvBinary* bin;
-	*rbuf = (char*) (bin = driver_alloc_binary(len));	
-	return (bin==NULL) ? NULL : (unsigned char *) bin->orig_bytes;
+      ErlDrvBinary* bin;
+      *rbuf = (char*) (bin = driver_alloc_binary(len));	
+      return (bin==NULL) ? NULL : (unsigned char *) bin->orig_bytes;
     }
 }
 
 static INLINE unsigned char* return_binary_shrink(char **rbuf, int rlen, unsigned char* data, int len)
 {
-    if ((char *) data == *rbuf) { /* default buffer */
+  if ((char *) data == *rbuf) { /* default buffer */
 	ASSERT(len <= rlen);
 	return (unsigned char *) data;
-    }
-    else {
+  }
+  else {
 	ErlDrvBinary* bin = (ErlDrvBinary*) *rbuf;
 	*rbuf = (char*) (bin=driver_realloc_binary(bin, len));
 	return (bin==NULL) ? NULL : (unsigned char *) bin->orig_bytes;
-    }
+  }
 }
 
 /* Nowadays (R13) it does matter what value control returns
@@ -387,10 +393,13 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
     int data_len, dsa_p_len, dsa_q_len;
     int dsa_s_len, dsa_g_len, dsa_y_len;
     int rsa_e_len, rsa_n_len, rsa_d_len, padding;
-    int rsa_keylen;
+    int private_pemlen, public_pemlen, x509len;
     int or_mask;
     int prime_len, generator;
     int privkey_len, pubkey_len, dh_p_len, dh_g_len;
+    unsigned char *private_pemdata;
+    unsigned char *public_pemdata;
+    unsigned char *x509data;
     unsigned int rsa_s_len, j;
     unsigned long f4=RSA_F4;
     char *key, *key2, *dbuf;
@@ -402,6 +411,7 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
     BIGNUM *dsa_p, *dsa_q, *dsa_g, *dsa_y;
     BIGNUM *rsa_n, *rsa_e, *rsa_d;
     BIGNUM *dh_p, *dh_g, *privkey, *pubkey;
+    BIO *bio_private_pem, *bio_public_pem, *bio_x509;
     DES_cblock *des_ivec;
     unsigned char* bin;
     DES_key_schedule schedule, schedule2, schedule3;
@@ -750,10 +760,10 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
         if (len != 6)
             return -1;
         dlen = get_int32(buf);
-	bin = return_binary(rbuf,rlen,dlen);
-	if (bin==NULL) return -1;
-	RAND_pseudo_bytes(bin,dlen);
-	ERL_VALGRIND_MAKE_MEM_DEFINED(bin, dlen);
+        bin = return_binary(rbuf,rlen,dlen);
+        if (bin==NULL) return -1;
+        RAND_pseudo_bytes(bin,dlen);
+        ERL_VALGRIND_MAKE_MEM_DEFINED(bin, dlen);
         or_mask = ((unsigned char*)buf)[4];
         bin[dlen-1] |= or_mask; /* topmask */
         or_mask = ((unsigned char*)buf)[5];
@@ -1316,19 +1326,17 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
       bn_rsa_genkey = BN_new();
       BN_set_word(bn_rsa_genkey, f4);
       
-      rsa_keylen=get_int32(buf);
+      int rsa_keylen=get_int32(buf);
       
-      BIO *bio_private_pem = BIO_new(BIO_s_mem());
-      BIO *bio_public_pem = BIO_new(BIO_s_mem());
+      bio_private_pem = BIO_new(BIO_s_mem());
+      bio_public_pem = BIO_new(BIO_s_mem());
       
       if (RSA_generate_key_ex(rsa, rsa_keylen, bn_rsa_genkey, NULL)) {
         PEM_write_bio_RSA_PUBKEY(bio_public_pem,rsa);
         PEM_write_bio_RSAPrivateKey(bio_private_pem,rsa,NULL,NULL,0,NULL,NULL);
         
-        unsigned char *private_pemdata;
-        unsigned char *public_pemdata;
-        int private_pemlen = BIO_get_mem_data(bio_private_pem, &private_pemdata);
-        int public_pemlen = BIO_get_mem_data(bio_public_pem, &public_pemdata);
+        private_pemlen = BIO_get_mem_data(bio_private_pem, &private_pemdata);
+        public_pemlen = BIO_get_mem_data(bio_public_pem, &public_pemdata);
         
         dlen = sizeof(int)+private_pemlen+sizeof(int)+public_pemlen;
         bin = return_binary(rbuf, rlen, dlen);
@@ -1352,51 +1360,53 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
 
     case DRV_X509_MAKE_CERT:
       {
-        int serial = 1;
-        RSA* pRSA = RSA_new();
-        int days = 365;
+        rsa = RSA_new();
         
+        /* set RSA key gen type */
         bn_rsa_genkey = BN_new();
         BN_set_word(bn_rsa_genkey, f4);
-        
-        rsa_keylen=get_int32(buf);
-        
-        if (RSA_generate_key_ex(pRSA, rsa_keylen, bn_rsa_genkey, NULL)) {
+
+        x509_subject_entry *subject_entries = NULL;
+        int expiry, keylen;
+        int subject_entry_count = x509_decode_subject_entries(&expiry, &keylen, &subject_entries, buf);
+
+        /* generate RSA keypair for cert */
+        if (RSA_generate_key_ex(rsa, keylen, bn_rsa_genkey, NULL)) {
+          int serial = 1;
           EVP_PKEY* pEVP = EVP_PKEY_new();
           X509* pX509 = X509_new();
           X509_NAME* pX509Name = NULL;
+
+          /* if we've managed to generate a key and allocate structure memory,
+             set X509 fields */
           if(pEVP && pX509){
-            EVP_PKEY_assign_RSA(pEVP, pRSA);
+            EVP_PKEY_assign_RSA(pEVP, rsa);
             X509_set_version(pX509, 3);
             ASN1_INTEGER_set(X509_get_serialNumber(pX509),serial);
             X509_gmtime_adj(X509_get_notBefore(pX509),0);
-            X509_gmtime_adj(X509_get_notAfter(pX509),(long)60*60*24*days);
+            X509_gmtime_adj(X509_get_notAfter(pX509),(long)60*60*24*expiry);
             X509_set_pubkey(pX509,pEVP);
             pX509Name =X509_get_subject_name(pX509);
-            
-            /* This function creates and adds the entry, working out the
-             * correct string type and performing checks on its length.
-             * Normally we'd check the return value for errors...
-             */
-            X509_NAME_add_entry_by_txt(pX509Name,"C",
-                                       MBSTRING_ASC, "UK", -1, -1, 0);
-            X509_NAME_add_entry_by_txt(pX509Name,"CN",
-                                       MBSTRING_ASC, "OpenSSL Group", -1, -1, 0);
+
+            while(--subject_entry_count >=0){
+              X509_NAME_add_entry_by_txt(pX509Name, (subject_entries[subject_entry_count]).name,
+                                         MBSTRING_ASC, (subject_entries[subject_entry_count]).value, -1, -1, 0);
+              free(subject_entries[subject_entry_count].name);
+              free(subject_entries[subject_entry_count].value);
+            }
             
             /* Its self signed so set the issuer name to be the same as the
              * subject.
              */
             X509_set_issuer_name(pX509,pX509Name);
             
-            BIO *bio_private_pem = BIO_new(BIO_s_mem());
-            BIO *bio_x509 = BIO_new(BIO_s_mem());
-            PEM_write_bio_RSAPrivateKey(bio_private_pem,pRSA,NULL,NULL,0,NULL,NULL);
+            bio_private_pem = BIO_new(BIO_s_mem());
+            bio_x509 = BIO_new(BIO_s_mem());
+            PEM_write_bio_RSAPrivateKey(bio_private_pem,rsa,NULL,NULL,0,NULL,NULL);
             PEM_write_bio_X509(bio_x509, pX509);
-            
-            unsigned char *private_pemdata;
-            unsigned char *x509data;
-            int private_pemlen = BIO_get_mem_data(bio_private_pem, &private_pemdata);
-            int x509len = BIO_get_mem_data(bio_x509, &x509data);
+
+            private_pemlen = BIO_get_mem_data(bio_private_pem, &private_pemdata);
+            x509len = BIO_get_mem_data(bio_x509, &x509data);
             
             dlen = sizeof(int)+private_pemlen+sizeof(int)+x509len;
             bin = return_binary(rbuf, rlen, dlen);
@@ -1412,14 +1422,15 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
             strncpy(bin, x509data, x509len);
             BIO_free_all(bio_private_pem);
             BIO_free_all(bio_x509);
+
           }
         }
         
         
         if (bn_rsa_genkey) BN_free(bn_rsa_genkey);
-        if (pRSA) RSA_free(pRSA);
-        
-        return i;
+        if (rsa) RSA_free(rsa);
+
+        return 0;
       }
 
     case DRV_CBC_AES128_ENCRYPT:
@@ -1914,4 +1925,62 @@ static void hmac_sha1(char *key, int klen, char *dbuf, int dlen,
     SHA1_Update(&ctx, opad, HMAC_INT_LEN);
     SHA1_Update(&ctx, hmacbuf, SHA_LEN);
     SHA1_Final((unsigned char *) hmacbuf, &ctx);
+}
+
+static int x509_decode_subject_entries(int *expiry, int *keylen, x509_subject_entry **subject_entries, char *buf)
+{
+  int subject_index=0;
+  int subject_arity=0;
+  int arity = 0;
+  int index = 0;
+  char *x509atom = calloc(sizeof(char), 20);
+  char *x509string = calloc(sizeof(char), 1024);
+  long expiry_l;
+  long keylen_l;
+  x509_subject_entry* pSubjectEntry = NULL;
+        
+  /* get input from erlang side */
+  ei_decode_version(buf, &index, &arity);
+
+  /* entire list of options */
+  ei_decode_list_header(buf, &index, &arity);
+
+  /* expiry */
+  ei_decode_tuple_header(buf, &index, &arity);
+  ei_decode_atom(buf,&index, x509atom);
+  ei_decode_long(buf, &index, &expiry_l);
+  *expiry = expiry_l;
+
+  /* keylen */
+  ei_decode_tuple_header(buf, &index, &arity);
+  ei_decode_atom(buf, &index, x509atom);
+  ei_decode_long(buf, &index, &keylen_l);
+  *keylen = keylen_l;
+
+  /* subject */
+  ei_decode_tuple_header(buf, &index, &arity);
+  ei_decode_atom(buf, &index, x509atom);
+
+  /* list of subject fields */
+  ei_decode_list_header(buf, &index, &subject_arity);
+
+  /* subject field values decoded */
+  if(subject_arity >0){
+    pSubjectEntry = (x509_subject_entry*)malloc(sizeof(x509_subject_entry)*subject_arity);
+    for(subject_index=0; subject_index < subject_arity; subject_index++){
+      ei_decode_tuple_header(buf, &index, &arity);
+      ei_decode_atom(buf, &index, x509atom);
+      ei_decode_string(buf, &index, x509string);
+      pSubjectEntry[subject_index].name = (char*)malloc(strlen(x509atom)+1);
+      strncpy(pSubjectEntry[subject_index].name, x509atom, strlen(x509atom));
+      pSubjectEntry[subject_index].value = (char*)malloc(strlen(x509string)+1);
+      strncpy(pSubjectEntry[subject_index].value, x509string, strlen(x509string));
+    }
+    *subject_entries = pSubjectEntry;
+  }
+
+  if(x509atom) free(x509atom);
+  if(x509string) free(x509string);
+
+  return subject_arity;
 }

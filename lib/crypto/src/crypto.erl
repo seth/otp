@@ -513,9 +513,10 @@ rsa_generate_keypair(KeyLen) when is_integer(KeyLen) ->
 %             <<PemPrivateLen:32/integer, PemPrivateKey:PemPrivateLen/binary, X509CertLen:32/integer, X509Cert:X509CertLen/binary>> = control(?X509_MAKE_CERT, [term_to_binary([{expiry, Expiry}, {keylen, Keylen}, SubjectInfoList])]),
 %             [{private_key, PemPrivateKey}, {x509_cert, X509Cert}]
 %     end.
-x509_make_cert([{expiry, ExpiryDays}, {keylen, KeylenBits}, {subject, Subject}] = X509Descriptor) when is_integer(ExpiryDays) and is_integer(KeylenBits) and is_list(Subject) ->
+x509_make_cert([{serial, Serial}, {expiry, ExpiryDays}, {keylen, KeylenBits}, {subject, Subject}] = X509Descriptor) when is_integer(Serial) and is_integer(ExpiryDays) and is_integer(KeylenBits) and is_list(Subject) ->
     <<PemPrivateLen:32/integer, PemPrivateKey:PemPrivateLen/binary, X509CertLen:32/integer, X509Cert:X509CertLen/binary>> = control(?X509_MAKE_CERT, [term_to_binary(X509Descriptor)]),
     [{private_key, PemPrivateKey}, {x509_cert, X509Cert}].
+
 %%
 %% AES - with 128 or 256 bit key in cipher block chaining mode (CBC)
 %%

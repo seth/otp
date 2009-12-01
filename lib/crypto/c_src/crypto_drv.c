@@ -1376,17 +1376,20 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
           EVP_PKEY* pEVP = EVP_PKEY_new();
           X509* pX509 = X509_new();
           X509_NAME* pX509Name = NULL;
+          ASN1_INTEGER *asn1serial = ASN1_INTEGER_new();
+          const EVP_MD *digest=EVP_sha1();
 
           /* if we've managed to generate a key and allocate structure memory,
              set X509 fields */
           if(pEVP && pX509){
             EVP_PKEY_assign_RSA(pEVP, rsa);
-            X509_set_version(pX509, 3);
-            ASN1_INTEGER_set(X509_get_serialNumber(pX509),serial);
+            X509_set_version(pX509, 2);
+            ASN1_INTEGER_set(asn1serial, serial);
+            X509_set_serialNumber(pX509, asn1serial);
             X509_gmtime_adj(X509_get_notBefore(pX509),0);
             X509_gmtime_adj(X509_get_notAfter(pX509),(long)60*60*24*expiry);
             X509_set_pubkey(pX509,pEVP);
-            pX509Name =X509_get_subject_name(pX509);
+            pX509Name = X509_get_subject_name(pX509);
 
             while(--subject_entry_count >=0){
               X509_NAME_add_entry_by_txt(pX509Name, (subject_entries[subject_entry_count]).name,
@@ -1399,7 +1402,9 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
              * subject.
              */
             X509_set_issuer_name(pX509,pX509Name);
-            
+            X509_sign(pX509, pEVP, digest);
+
+
             bio_private_pem = BIO_new(BIO_s_mem());
             bio_x509 = BIO_new(BIO_s_mem());
             PEM_write_bio_RSAPrivateKey(bio_private_pem,rsa,NULL,NULL,0,NULL,NULL);
@@ -1420,8 +1425,9 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
             put_int32(bin, x509len);
             bin+=sizeof(int);
             strncpy(bin, x509data, x509len);
-            BIO_free_all(bio_private_pem);
-            BIO_free_all(bio_x509);
+            if(bio_private_pem) BIO_free_all(bio_private_pem);
+            if(bio_x509) BIO_free_all(bio_x509);
+            if(asn1serial) ASN1_INTEGER_free(asn1serial);
 
           }
         }

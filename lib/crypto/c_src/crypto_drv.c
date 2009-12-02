@@ -142,7 +142,7 @@ static void hmac_md5(char *key, int klen, char *dbuf, int dlen,
                      char *hmacbuf);
 static void hmac_sha1(char *key, int klen, char *dbuf, int dlen, 
                       char *hmacbuf);
-static int x509_decode_subject_entries(char **signing_key, int *serial, int *expiry, int *keylen, x509_subject_entry **subject_entries, char *buf);
+static int x509_decode_subject_entries(char **signing_key, int *serial, int *expiry, int *keylen, x509_subject_entry **subject_entries, int *subject_entry_count, char **issuer_cert, char *buf);
 
 static ErlDrvEntry crypto_driver_entry = {
     init,
@@ -411,9 +411,12 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
     unsigned long f4=RSA_F4;
     char *key, *key2, *dbuf;
     char *signing_key=NULL;
+    char *issuer_cert=NULL;
     EVP_PKEY *evp_key = NULL;
     X509 *pX509 = NULL;
+    X509 *pIssuerX509 = NULL;
     X509_NAME *pX509Name = NULL;
+    X509_NAME *pIssuerName = NULL;
     ASN1_INTEGER *asn1serial = NULL;
     const EVP_MD *digest = EVP_sha1();
     unsigned char *p;
@@ -424,7 +427,7 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
     BIGNUM *dsa_p, *dsa_q, *dsa_g, *dsa_y;
     BIGNUM *rsa_n, *rsa_e, *rsa_d;
     BIGNUM *dh_p, *dh_g, *privkey, *pubkey;
-    BIO *bio_private_pem=NULL, *bio_public_pem=NULL, *bio_x509=NULL;
+    BIO *bio_private_pem=NULL, *bio_public_pem=NULL, *bio_x509=NULL, *bio_issuer_cert;
     DES_cblock *des_ivec;
     unsigned char* bin;
     DES_key_schedule schedule, schedule2, schedule3;
@@ -1379,10 +1382,7 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
 
         x509_subject_entry *subject_entries = NULL;
         int expiry, keylen;
-        subject_entry_count = x509_decode_subject_entries(&signing_key, &serial, &expiry, &keylen, &subject_entries, buf);
-        bio_private_pem = BIO_new_mem_buf(signing_key, -1);
-
-        if(bio_private_pem){
+        if(x509_decode_subject_entries(&signing_key, &serial, &expiry, &keylen, &subject_entries, &subject_entry_count, &issuer_cert, buf) && (bio_private_pem = BIO_new_mem_buf(signing_key, -1)) && (bio_issuer_cert = BIO_new_mem_buf(issuer_cert, -1))){
           evp_key = EVP_PKEY_new();
 
           if((rsa = PEM_read_bio_RSAPrivateKey(bio_private_pem, NULL, NULL, NULL)) && EVP_PKEY_assign_RSA(evp_key, rsa)){
@@ -1405,10 +1405,10 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
                 free(subject_entries[subject_entry_count].name);
                 free(subject_entries[subject_entry_count].value);
               }
-              /* Its self signed so set the issuer name to be the same as the
-               * subject.
-               */
-              X509_set_issuer_name(pX509,pX509Name);
+              pIssuerX509 = PEM_read_bio_X509(bio_issuer_cert, NULL, NULL, NULL);
+              pIssuerName = X509_get_issuer_name(pIssuerX509);
+              X509_set_issuer_name(pX509, pIssuerName);
+
               X509_sign(pX509, evp_key, digest);
 
               bio_private_pem = BIO_new(BIO_s_mem());
@@ -1437,6 +1437,10 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
         }
         
       done:
+        if(pX509) X509_free(pX509);
+        if(pIssuerX509) X509_free(pIssuerX509);
+        if(issuer_cert) free(issuer_cert);
+        if(bio_issuer_cert) { BIO_set_close(bio_issuer_cert, BIO_NOCLOSE); BIO_free_all(bio_issuer_cert); }
         if(bio_private_pem) { BIO_set_close(bio_private_pem, BIO_NOCLOSE); BIO_free_all(bio_private_pem); }
         if(bio_x509) BIO_free_all(bio_x509);
         if(asn1serial) ASN1_INTEGER_free(asn1serial);
@@ -1941,7 +1945,7 @@ static void hmac_sha1(char *key, int klen, char *dbuf, int dlen,
     SHA1_Final((unsigned char *) hmacbuf, &ctx);
 }
 
-static int x509_decode_subject_entries(char **signing_key, int *serial, int *expiry, int *keylen, x509_subject_entry **subject_entries, char *buf)
+static int x509_decode_subject_entries(char **signing_key, int *serial, int *expiry, int *keylen, x509_subject_entry **subject_entries, int *subject_entry_count, char **issuer_cert, char *buf)
 {
   int subject_index=0;
   int subject_arity=0;
@@ -1949,12 +1953,14 @@ static int x509_decode_subject_entries(char **signing_key, int *serial, int *exp
   int index = 0;
   int len;
   int type;
+  int res;
+  long expiry_l, keylen_l, serial_l, binary_l;
   char *x509atom = calloc(sizeof(char), 20);
   char *x509string = calloc(sizeof(char), 1024);
-  long expiry_l;
-  long keylen_l;
   x509_subject_entry* pSubjectEntry = NULL;
-        
+
+  *subject_entry_count = 0;
+
   /* get input from erlang side */
   ei_decode_version(buf, &index, &arity);
 
@@ -1980,30 +1986,41 @@ static int x509_decode_subject_entries(char **signing_key, int *serial, int *exp
   ei_decode_long(buf, &index, &keylen_l);
   *keylen = keylen_l;
 
+  /* issuer cert */
+  ei_get_type(buf, &index, &type, &len);
+  res = ei_decode_tuple_header(buf, &index, &arity);
+  res = ei_decode_atom(buf, &index, x509atom);
+  ei_get_type(buf, &index, &type, &len);
+  *issuer_cert = calloc(sizeof(char), len+1);
+  binary_l = len;
+  ei_decode_binary(buf, &index, *issuer_cert, &binary_l);
+
   /* subject */
   ei_decode_tuple_header(buf, &index, &arity);
   ei_decode_atom(buf, &index, x509atom);
 
   /* list of subject fields */
-  ei_decode_list_header(buf, &index, &subject_arity);
+  res = ei_decode_list_header(buf, &index, &subject_arity);
 
   /* subject field values decoded */
   if(subject_arity >0){
     pSubjectEntry = (x509_subject_entry*)malloc(sizeof(x509_subject_entry)*subject_arity);
     for(subject_index=0; subject_index < subject_arity; subject_index++){
-      ei_decode_tuple_header(buf, &index, &arity);
-      ei_decode_atom(buf, &index, x509atom);
-      ei_decode_string(buf, &index, x509string);
+      res = ei_decode_tuple_header(buf, &index, &arity);
+      res = ei_decode_atom(buf, &index, x509atom);
+      res = ei_decode_string(buf, &index, x509string);
       pSubjectEntry[subject_index].name = (char*)malloc(strlen(x509atom)+1);
       strncpy(pSubjectEntry[subject_index].name, x509atom, strlen(x509atom));
       pSubjectEntry[subject_index].value = (char*)malloc(strlen(x509string)+1);
       strncpy(pSubjectEntry[subject_index].value, x509string, strlen(x509string));
     }
     *subject_entries = pSubjectEntry;
+    *subject_entry_count = subject_arity;
   }
+
 
   if(x509atom) free(x509atom);
   if(x509string) free(x509string);
 
-  return subject_arity;
+  return 1;
 }

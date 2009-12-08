@@ -142,7 +142,7 @@ static void hmac_md5(char *key, int klen, char *dbuf, int dlen,
                      char *hmacbuf);
 static void hmac_sha1(char *key, int klen, char *dbuf, int dlen, 
                       char *hmacbuf);
-static int x509_decode_subject_entries(char **signing_key, int *serial, int *expiry, int *keylen, x509_subject_entry **subject_entries, int *subject_entry_count, char **issuer_cert, char *buf);
+static int x509_decode_subject_entries(char **issuer_private_key, char **issuer_cert, char **cert_public_key, x509_subject_entry **subject_entries, int *subject_entry_count, int *serial, int *expiry, char *buf);
 
 static ErlDrvEntry crypto_driver_entry = {
     init,
@@ -410,14 +410,6 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
     unsigned int rsa_s_len, j;
     unsigned long f4=RSA_F4;
     char *key, *key2, *dbuf;
-    char *signing_key=NULL;
-    char *issuer_cert=NULL;
-    EVP_PKEY *evp_key = NULL;
-    X509 *pX509 = NULL;
-    X509 *pIssuerX509 = NULL;
-    X509_NAME *pX509Name = NULL;
-    X509_NAME *pIssuerName = NULL;
-    ASN1_INTEGER *asn1serial = NULL;
     const EVP_MD *digest = EVP_sha1();
     unsigned char *p;
     const_DES_cblock *des_key, *des_key2, *des_key3;
@@ -427,7 +419,6 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
     BIGNUM *dsa_p, *dsa_q, *dsa_g, *dsa_y;
     BIGNUM *rsa_n, *rsa_e, *rsa_d;
     BIGNUM *dh_p, *dh_g, *privkey, *pubkey;
-    BIO *bio_private_pem=NULL, *bio_public_pem=NULL, *bio_x509=NULL, *bio_issuer_cert;
     DES_cblock *des_ivec;
     unsigned char* bin;
     DES_key_schedule schedule, schedule2, schedule3;
@@ -1335,8 +1326,10 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
        }
        break;
 
-    case DRV_RSA_GENERATE_KEY:
-      /* buf = <<KeyLen:32/integer>> */
+    case DRV_RSA_GENERATE_KEY: {
+      BIO *bio_private_pem=NULL, *bio_public_pem=NULL;
+
+       /* buf = <<KeyLen:32/integer>> */
       rsa = RSA_new();
       
       bn_rsa_genkey = BN_new();
@@ -1373,30 +1366,61 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
       BN_free(bn_rsa_genkey);
       RSA_free(rsa);
       return i;
+    }
 
     case DRV_X509_MAKE_CERT:
       {
+        int expiry, serial;
+        ASN1_INTEGER *asn1serial = NULL;
+
+        BIO *bio_signing_private_pem=NULL, *bio_x509=NULL, *bio_issuer_cert_pem = NULL;
+        char *issuer_cert_pem=NULL, *signing_private_key_pem=NULL, *cert_public_key_pem=NULL;
+
+        x509_subject_entry *subject_entries = NULL;
+        int subject_entry_count;
+
+        EVP_PKEY *evp_signing_private = EVP_PKEY_new();
+        EVP_PKEY *evp_cert_public_key = EVP_PKEY_new();
+        X509 *pX509 = NULL;
+        X509 *pIssuerX509 = NULL;
+        X509_NAME *pX509Name = NULL;
+        X509_NAME *pIssuerName = NULL;
+
+
         /* set RSA key gen type */
         bn_rsa_genkey = BN_new();
         BN_set_word(bn_rsa_genkey, f4);
 
-        x509_subject_entry *subject_entries = NULL;
-        int expiry, keylen;
-        if(x509_decode_subject_entries(&signing_key, &serial, &expiry, &keylen, &subject_entries, &subject_entry_count, &issuer_cert, buf) && (bio_private_pem = BIO_new_mem_buf(signing_key, -1)) && (bio_issuer_cert = BIO_new_mem_buf(issuer_cert, -1))){
-          evp_key = EVP_PKEY_new();
+        //
+        // 1. stick subject of CA cert into NewCert
+        // 2. stick public key of CA cert into NewCert
+        // 3. sign NewCert with CA keypair
+        //if(x509_decode_subject_entries(&signing_key, &serial, &expiry, &keylen, &subject_entries, &subject_entry_count, &issuer_cert, buf) && (bio_private_pem = BIO_new_mem_buf(signing_key, -1)) && (bio_issuer_cert = BIO_new_mem_buf(issuer_cert, -1))){
+        if(x509_decode_subject_entries(&signing_private_key_pem, &issuer_cert_pem, &cert_public_key_pem, &subject_entries, &subject_entry_count, &serial, &expiry, buf)) {
+          fprintf(stdout, "signing_private_key_pem = %s\n", signing_private_key_pem); fflush(stdout);
+          bio_signing_private_pem = BIO_new_mem_buf(signing_private_key_pem, -1);
+          fprintf(stdout, "issuer_cert_pem = %s\n", issuer_cert_pem); fflush(stdout);
+          bio_issuer_cert_pem = BIO_new_mem_buf(issuer_cert_pem, -1);
 
-          if((rsa = PEM_read_bio_RSAPrivateKey(bio_private_pem, NULL, NULL, NULL)) && EVP_PKEY_assign_RSA(evp_key, rsa)){
+          fprintf(stdout, "rsa = PEM_read_bio_RSAPrivateKey\n"); fflush(stdout);
+          rsa = PEM_read_bio_RSAPrivateKey(bio_signing_private_pem, NULL, NULL, NULL);
+          fprintf(stdout, "EVP_PKEY_assign_RSA\n"); fflush(stdout);
+          EVP_PKEY_assign_RSA(evp_signing_private, rsa);
 
+          fprintf(stdout, "PEM_read_bio_RSAPrivateKey\n");
+          pIssuerX509 = PEM_read_bio_X509(bio_issuer_cert_pem, NULL, NULL, NULL);
+
+          if(1) {
             /* if we've managed to generate a key and allocate structure memory,
                set X509 fields */
             if((pX509 = X509_new())){
               asn1serial = ASN1_INTEGER_new();
-              X509_set_version(pX509, 2);
+              X509_set_version(pX509, 2); /* cert_helper uses '3' here */
               ASN1_INTEGER_set(asn1serial, serial);
               X509_set_serialNumber(pX509, asn1serial);
               X509_gmtime_adj(X509_get_notBefore(pX509),0);
               X509_gmtime_adj(X509_get_notAfter(pX509),(long)60*60*24*expiry);
-              X509_set_pubkey(pX509,evp_key);
+              X509_set_pubkey(pX509,evp_cert_public_key);
               pX509Name = X509_get_subject_name(pX509);
 
               while(--subject_entry_count >=0){
@@ -1405,29 +1429,18 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
                 free(subject_entries[subject_entry_count].name);
                 free(subject_entries[subject_entry_count].value);
               }
-              pIssuerX509 = PEM_read_bio_X509(bio_issuer_cert, NULL, NULL, NULL);
               pIssuerName = X509_get_issuer_name(pIssuerX509);
               X509_set_issuer_name(pX509, pIssuerName);
-
-              X509_sign(pX509, evp_key, digest);
-
-              bio_private_pem = BIO_new(BIO_s_mem());
+              X509_sign(pX509, evp_signing_private, digest);
               bio_x509 = BIO_new(BIO_s_mem());
-              PEM_write_bio_RSAPrivateKey(bio_private_pem,rsa,NULL,NULL,0,NULL,NULL);
               PEM_write_bio_X509(bio_x509, pX509);
 
-              private_pemlen = BIO_get_mem_data(bio_private_pem, &private_pemdata);
               x509len = BIO_get_mem_data(bio_x509, &x509data);
             
-              dlen = sizeof(int)+private_pemlen+sizeof(int)+x509len;
+              dlen = sizeof(int)+x509len;
               bin = return_binary(rbuf, rlen, dlen);
-              private_pemdata[private_pemlen]=0;
               x509data[x509len]=0;
             
-              put_int32(bin, private_pemlen);
-              bin+=sizeof(int);
-              strncpy((char*)bin, (const char*)private_pemdata, private_pemlen);
-              bin+=private_pemlen;
               put_int32(bin, x509len);
               bin+=sizeof(int);
               strncpy((char*)bin, (const char*)x509data, x509len);
@@ -1439,15 +1452,14 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
       done:
         if(pX509) X509_free(pX509);
         if(pIssuerX509) X509_free(pIssuerX509);
-        if(issuer_cert) free(issuer_cert);
-        if(bio_issuer_cert) { BIO_set_close(bio_issuer_cert, BIO_NOCLOSE); BIO_free_all(bio_issuer_cert); }
-        if(bio_private_pem) { BIO_set_close(bio_private_pem, BIO_NOCLOSE); BIO_free_all(bio_private_pem); }
+        if(issuer_cert_pem) free(issuer_cert_pem);
+        if(bio_issuer_cert_pem) { BIO_set_close(bio_issuer_cert_pem, BIO_NOCLOSE); BIO_free_all(bio_issuer_cert_pem); }
+        if(bio_signing_private_pem) { BIO_set_close(bio_signing_private_pem, BIO_NOCLOSE); BIO_free_all(bio_signing_private_pem); }
         if(bio_x509) BIO_free_all(bio_x509);
         if(asn1serial) ASN1_INTEGER_free(asn1serial);
         if(bn_rsa_genkey) BN_free(bn_rsa_genkey);
         if(rsa) RSA_free(rsa);
-        if(signing_key) free(signing_key);
-
+        if(signing_private_key_pem) free(signing_private_key_pem);
         return 0;
       }
 
@@ -1945,7 +1957,7 @@ static void hmac_sha1(char *key, int klen, char *dbuf, int dlen,
     SHA1_Final((unsigned char *) hmacbuf, &ctx);
 }
 
-static int x509_decode_subject_entries(char **signing_key, int *serial, int *expiry, int *keylen, x509_subject_entry **subject_entries, int *subject_entry_count, char **issuer_cert, char *buf)
+static int x509_decode_subject_entries(char **signing_private_key, char **issuer_cert, char **cert_public_key, x509_subject_entry **subject_entries, int *subject_entry_count, int *serial, int *expiry, char *buf)
 {
   int subject_index=0;
   int subject_arity=0;
@@ -1954,12 +1966,37 @@ static int x509_decode_subject_entries(char **signing_key, int *serial, int *exp
   int len;
   int type;
   int res;
-  long expiry_l, keylen_l, serial_l, binary_l;
-  char *x509atom = calloc(sizeof(char), 20);
+  long expiry_l, serial_l, binary_l;
+  char *x509atom = calloc(sizeof(char), 50);
   char *x509string = calloc(sizeof(char), 1024);
+  char *_throwaway; /* TODO: tim: 2009-12-4: is there a way to "skip" strings, instead of having to decode them then immediately free? */
   x509_subject_entry* pSubjectEntry = NULL;
 
   *subject_entry_count = 0;
+
+#define DBG(msg) 1
+#define DBGA(msg) 1
+
+#define _DBG(msg) { \
+    int t_type; int t_len; int save_index = index;  \
+    ei_get_type(buf, &index, &t_type, &t_len); \
+    fprintf(stdout, "%50s (index %4d)  type %3d, len %4d\n", msg, index, t_type, t_len); \
+    fprintf(stdout, "--- "); ei_print_term(stdout, buf, &index); fprintf(stdout, "\n"); \
+    index = save_index;\
+    fflush(stdout); \
+}
+#define _DBGA(msg) { \
+    int t_type; int t_len; int save_index = index; char t_atom[128];    \
+    memset(t_atom, 0, sizeof(t_atom)); \
+    ei_get_type(buf, &index, &t_type, &t_len); \
+    ei_decode_atom(buf,&index, t_atom); \
+    index = save_index; \
+    fprintf(stdout, "%50s (index %4d)  type %3d, len %4d -- ATOM '%s'\n", msg, index, t_type, t_len, t_atom); \
+    fprintf(stdout, "--- "); ei_print_term(stdout, buf, &index); fprintf(stdout, "\n"); \
+    index=save_index;\
+    fflush(stdout);\
+}
+
 
   /* get input from erlang side */
   ei_decode_version(buf, &index, &arity);
@@ -1968,32 +2005,66 @@ static int x509_decode_subject_entries(char **signing_key, int *serial, int *exp
   ei_decode_list_header(buf, &index, &arity);
 
   /* signing key */
+  // {signing_key, {keypair, [{public_key, _}, {private_key, SigningPrivateKeyPem}]}}
   ei_decode_tuple_header(buf, &index, &arity);
-  ei_decode_atom(buf,&index, x509atom);
+  ei_decode_atom(buf,&index, x509atom);            // 'signing_key'
+
+  ei_decode_tuple_header(buf, &index, &arity);     // 'keypair' tuple
+  ei_decode_atom(buf,&index, x509atom);            // 'keypair'
+  ei_decode_list_header(buf, &index, &arity);      // list of pub/priv tuples
+  ei_decode_tuple_header(buf, &index, &arity);     // 'public_key' tuple
+  ei_decode_atom(buf,&index, x509atom);            // 'public_key'
   ei_get_type(buf, &index, &type, &len);
-  *signing_key = (char*)calloc(sizeof(char),len+1);
-  ei_decode_string(buf, &index, *signing_key);
+  _throwaway = (char*)calloc(sizeof(char),len+1);  // _
+  binary_l = len;
+  ei_decode_binary(buf, &index, _throwaway, &binary_l);
+  fprintf(stdout, "  _throwaway signing_key.'public_key': %s\n", _throwaway); fflush(stdout);
+  free(_throwaway); /* TODO: tim: 2009-12-4: see above; is there a way to skip what I don't need instead of decoding then immediately freeing it? */
 
-  /* expiry */
-  ei_decode_tuple_header(buf, &index, &arity);
-  ei_decode_atom(buf,&index, x509atom);
-  ei_decode_long(buf, &index, &expiry_l);
-  *expiry = expiry_l;
-
-  /* keylen */
-  ei_decode_tuple_header(buf, &index, &arity);
-  ei_decode_atom(buf, &index, x509atom);
-  ei_decode_long(buf, &index, &keylen_l);
-  *keylen = keylen_l;
-
-  /* issuer cert */
+  ei_decode_tuple_header(buf, &index, &arity);     // private_key
+  ei_decode_atom(buf,&index, x509atom);            // 'private_key'
   ei_get_type(buf, &index, &type, &len);
-  res = ei_decode_tuple_header(buf, &index, &arity);
-  res = ei_decode_atom(buf, &index, x509atom);
+  *signing_private_key = (char*)calloc(sizeof(char),len+1); // SigningPrivateKeyPem
+  binary_l = len;
+  ei_decode_binary(buf, &index, *signing_private_key, &binary_l);
+  fprintf(stdout, "signing_private_key !! = %s\n", *signing_private_key); fflush(stdout);
+  ei_decode_list_header(buf, &index, &arity);      // chew the empty nil list at the end of the [Pub, Priv] tuple list
+
+  /* issuer cert {issuer_cert, IssuerCertPem} */
+  //ei_get_type(buf, &index, &type, &len);
+  res = ei_decode_tuple_header(buf, &index, &arity); // 
+  res = ei_decode_atom(buf, &index, x509atom);       // issuer_cert
   ei_get_type(buf, &index, &type, &len);
   *issuer_cert = calloc(sizeof(char), len+1);
   binary_l = len;
   ei_decode_binary(buf, &index, *issuer_cert, &binary_l);
+  fprintf(stdout, "issuer_cert !! = %s\n", *issuer_cert); fflush(stdout); 
+
+  /* cert_public_key */
+  // {cert_public_key, {keypair, [{public_key, CertPublicKeyPem}, {private_key, _}]}},
+  ei_decode_tuple_header(buf, &index, &arity);
+  ei_decode_atom(buf,&index, x509atom);           // 'cert_public_key'
+  ei_decode_tuple_header(buf, &index, &arity);    // 'keypair' tuple
+  ei_decode_atom(buf,&index, x509atom);           // 'keypair'
+  ei_decode_list_header(buf, &index, &arity);     // [pub, priv]
+  ei_decode_tuple_header(buf, &index, &arity);    // 'public_key' tuple
+  ei_decode_atom(buf,&index, x509atom);           // 'public_key'
+  ei_get_type(buf, &index, &type, &len);
+  *cert_public_key = (char*)calloc(sizeof(char),len+1); // CertPublicKeyPem
+  fprintf(stdout, "cert_public_key !! = %s\n", *cert_public_key);
+  binary_l = len;
+  ei_decode_binary(buf, &index, *cert_public_key, &binary_l);
+  ei_decode_tuple_header(buf, &index, &arity);    // 'private_key' tuple
+  ei_decode_atom(buf,&index, x509atom);           // 'private_key'
+  ei_get_type(buf, &index, &type, &len);
+  _throwaway = (char*)calloc(sizeof(char),len+1); // _
+  binary_l = len;
+  ei_decode_binary(buf, &index, _throwaway, &binary_l);
+  fprintf(stdout, "_throwaway cert_public_key.'private_key' = %s\n", _throwaway); fflush(stdout);
+  free(_throwaway); /* TODO: tim: 2009-12-4: see above; is there a way to skip what I don't need instead of decoding then immediately freeing it? */
+  /* parse the empty [] list at the end of the [Pub, Priv] tuple list */
+  ei_decode_list_header(buf, &index, &arity);
+  
 
   /* subject */
   ei_decode_tuple_header(buf, &index, &arity);
@@ -2009,6 +2080,7 @@ static int x509_decode_subject_entries(char **signing_key, int *serial, int *exp
       res = ei_decode_tuple_header(buf, &index, &arity);
       res = ei_decode_atom(buf, &index, x509atom);
       res = ei_decode_string(buf, &index, x509string);
+      fprintf(stdout, "x509string = %s, x509atom = %s\n", x509string, x509atom); fflush(stdout); 
       pSubjectEntry[subject_index].name = (char*)malloc(strlen(x509atom)+1);
       strncpy(pSubjectEntry[subject_index].name, x509atom, strlen(x509atom));
       pSubjectEntry[subject_index].value = (char*)malloc(strlen(x509string)+1);
@@ -2017,7 +2089,22 @@ static int x509_decode_subject_entries(char **signing_key, int *serial, int *exp
     *subject_entries = pSubjectEntry;
     *subject_entry_count = subject_arity;
   }
+  /* parse the empty [] list at the end of the subject descriptor list */
+  ei_decode_list_header(buf, &index, &arity);
 
+  /* serial */
+  ei_decode_tuple_header(buf, &index, &arity);
+  ei_decode_atom(buf,&index, x509atom);
+  ei_decode_long(buf, &index, &serial_l);
+  fprintf(stdout, "serial = %ld\n", serial_l); fflush(stdout); 
+  *serial = serial_l;
+
+  /* expiry */
+  ei_decode_tuple_header(buf, &index, &arity);
+  ei_decode_atom(buf,&index, x509atom);
+  ei_decode_long(buf, &index, &expiry_l);
+  fprintf(stdout, "expiry = %ld\n", expiry_l); fflush(stdout); 
+  *expiry = expiry_l;
 
   if(x509atom) free(x509atom);
   if(x509string) free(x509string);

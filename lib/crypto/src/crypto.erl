@@ -498,7 +498,7 @@ rsa_public_decrypt(BinMesg, Key, Padding) ->
 
 rsa_generate_keypair(KeyLen) when is_integer(KeyLen) ->
     <<PemPrivateLen:32/integer, PemPrivateKey:PemPrivateLen/binary, PemPublicLen:32/integer, PemPublicKey:PemPublicLen/binary>> = control(?RSA_GENERATE_KEY, [<<KeyLen:32>>]),
-    [{public_key,PemPublicKey},{private_key,PemPrivateKey}].
+    {keypair, [{public_key,PemPublicKey},{private_key,PemPrivateKey}]}.
 
 %%--------------------------------------------------------------------
 %% @doc Generates an X509 certificate
@@ -506,9 +506,16 @@ rsa_generate_keypair(KeyLen) when is_integer(KeyLen) ->
 %% @end
 %%--------------------------------------------------------------------
 
-x509_make_cert([{signing_key, SigningKey}, {serial, Serial}, {expiry, ExpiryDays}, {keylen, KeylenBits}, {issuer_cert, IssuerCert}, {subject, Subject}] = X509Descriptor) when is_list(SigningKey) and  is_integer(Serial) and is_integer(ExpiryDays) and is_integer(KeylenBits) and is_list(Subject) and is_binary(IssuerCert) ->
-    <<PemPrivateLen:32/integer, PemPrivateKey:PemPrivateLen/binary, X509CertLen:32/integer, X509Cert:X509CertLen/binary>> = control(?X509_MAKE_CERT, [term_to_binary(X509Descriptor)]),
-    [{private_key, PemPrivateKey}, {x509_cert, X509Cert}].
+%% Key = {keypair, [{public_key, PublicKey}, {private_key, PrivateKey}]}
+
+%% TODO make comments on what all this stuff is for.
+x509_make_cert([{signing_key, {keypair, [{public_key, _}, {private_key, SigningPrivateKeyPem}]}},
+                {issuer_cert, IssuerCertPem}, 
+                {cert_public_key, {keypair, [{public_key, CertPublicKeyPem}, {private_key, _}]}},
+                {subject, Subject},
+                {serial, Serial}, {expiry, ExpiryDays}] = X509Descriptor) when is_binary(SigningPrivateKeyPem) and is_binary(IssuerCertPem) and is_binary(CertPublicKeyPem) and is_integer(Serial) and is_integer(ExpiryDays) and is_list(Subject) ->
+    <<X509CertLen:32/integer, X509Cert:X509CertLen/binary>> = control(?X509_MAKE_CERT, [term_to_binary(X509Descriptor)]),
+    {x509_cert, X509Cert}.
 
 %%
 %% AES - with 128 or 256 bit key in cipher block chaining mode (CBC)
@@ -708,3 +715,4 @@ erlint(<<MPIntSize:32/integer,MPIntValue/binary>>) ->
     Bits= MPIntSize * 8,
     <<Integer:Bits/integer>> = MPIntValue,
     Integer.
+

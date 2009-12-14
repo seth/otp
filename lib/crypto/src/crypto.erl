@@ -511,9 +511,9 @@ rsa_generate_keypair(KeyLen) when is_integer(KeyLen) ->
 %% TODO make comments on what all this stuff is for.
 x509_make_cert([{signing_key, {keypair, [{public_key, _}, {private_key, SigningPrivateKeyPem}]}},
                 {issuer_cert, IssuerCertPem}, 
-                {cert_public_key, {keypair, [{public_key, CertPublicKeyPem}, {private_key, _}]}},
+                {newcert_public_key, {keypair, [{public_key, NewCertPublicKeyPem}, {private_key, _}]}},
                 {subject, Subject},
-                {serial, Serial}, {expiry, ExpiryDays}] = X509Descriptor) when is_binary(SigningPrivateKeyPem) and is_binary(IssuerCertPem) and is_binary(CertPublicKeyPem) and is_integer(Serial) and is_integer(ExpiryDays) and is_list(Subject) ->
+                {serial, Serial}, {expiry, ExpiryDays}] = X509Descriptor) when is_binary(SigningPrivateKeyPem) and is_binary(IssuerCertPem) and is_binary(NewCertPublicKeyPem) and is_integer(Serial) and is_integer(ExpiryDays) and is_list(Subject) ->
     <<X509CertLen:32/integer, X509Cert:X509CertLen/binary>> = control(?X509_MAKE_CERT, [term_to_binary(X509Descriptor)]),
     {x509_cert, X509Cert}.
 

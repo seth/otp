@@ -404,8 +404,6 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
     int or_mask;
     int prime_len, generator;
     int privkey_len, pubkey_len, dh_p_len, dh_g_len;
-    unsigned char *private_pemdata;
-    unsigned char *public_pemdata;
     unsigned char *x509data;
     unsigned int rsa_s_len, j;
     unsigned long f4=RSA_F4;
@@ -1328,6 +1326,7 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
 
     case DRV_RSA_GENERATE_KEY: {
       BIO *bio_private_pem=NULL, *bio_public_pem=NULL;
+      int result_length = -1;
 
        /* buf = <<KeyLen:32/integer>> */
       rsa = RSA_new();
@@ -1339,8 +1338,11 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
       
       bio_private_pem = BIO_new(BIO_s_mem());
       bio_public_pem = BIO_new(BIO_s_mem());
-      
+
       if (RSA_generate_key_ex(rsa, rsa_keylen, bn_rsa_genkey, NULL)) {
+        unsigned char *private_pemdata;
+        unsigned char *public_pemdata;
+
         PEM_write_bio_RSA_PUBKEY(bio_public_pem,rsa);
         PEM_write_bio_RSAPrivateKey(bio_private_pem,rsa,NULL,NULL,0,NULL,NULL);
         
@@ -1351,7 +1353,7 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
         bin = return_binary(rbuf, rlen, dlen);
         private_pemdata[private_pemlen]=0;
         public_pemdata[public_pemlen]=0;
-        
+
         put_int32(bin, private_pemlen);
         bin+=sizeof(int);
         strncpy(bin, private_pemdata, private_pemlen);
@@ -1359,13 +1361,17 @@ static int crypto_control(ErlDrvData drv_data, unsigned int command, char *buf,
         put_int32(bin, public_pemlen);
         bin+=sizeof(int);
         strncpy(bin, public_pemdata, public_pemlen);
+        result_length = dlen;
+      }
+      else {
+        fprintf(stderr, "generate_key returned 0 - bad rsa_keylen? %d\r\n", rsa_keylen);
       }
       
       BIO_free_all(bio_private_pem);
       BIO_free_all(bio_public_pem);
       BN_free(bn_rsa_genkey);
       RSA_free(rsa);
-      return i;
+      return result_length;
     }
 
     case DRV_X509_MAKE_CERT:

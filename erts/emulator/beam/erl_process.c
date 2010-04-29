@@ -38,6 +38,7 @@
 #include "erl_instrument.h"
 #include "erl_threads.h"
 #include "erl_binary.h"
+#include "beam_bp.h"
 
 #define ERTS_RUNQ_CHECK_BALANCE_REDS_PER_SCHED (2000*CONTEXT_REDS)
 #define ERTS_RUNQ_CALL_CHECK_BALANCE_REDS \
@@ -5851,6 +5852,11 @@ Process *schedule(Process *p, int calls)
 	}
 
 	if (IS_TRACED(p)) {
+	    if (IS_TRACED_FL(p, F_TRACE_CALLS) &&
+		    erts_default_trace_pattern_flags.call_time &&
+		    p->status != P_FREE) {
+		erts_schedule_time_break(p, ERTS_BP_CALL_TIME_SCHEDULE_OUT);
+	    }
 	    switch (p->status) {
 	    case P_EXITING:
 		if (ARE_TRACE_FLAGS_ON(p, F_TRACE_SCHED_EXIT))
@@ -6287,7 +6293,11 @@ Process *schedule(Process *p, int calls)
 		    trace_virtual_sched(p, am_in);
 		break;
 	    }
+	    if (IS_TRACED_FL(p, F_TRACE_CALLS) && erts_default_trace_pattern_flags.call_time) {
+		erts_schedule_time_break(p, ERTS_BP_CALL_TIME_SCHEDULE_IN);
+	    }
 	}
+
 	if (p->status != P_EXITING)
 	    p->status = P_RUNNING;
 
@@ -8039,8 +8049,13 @@ erts_do_exit_process(Process* p, Eterm reason)
     ERTS_SMP_MSGQ_MV_INQ2PRIVQ(p);
 #endif
 
-    if (IS_TRACED_FL(p,F_TRACE_PROCS))
-	trace_proc(p, p, am_exit, reason);
+    if (IS_TRACED(p)) {
+	if (IS_TRACED_FL(p, F_TRACE_CALLS) && erts_default_trace_pattern_flags.call_time)
+	    erts_schedule_time_break(p, ERTS_BP_CALL_TIME_SCHEDULE_EXITING);
+
+	if (IS_TRACED_FL(p,F_TRACE_PROCS))
+	    trace_proc(p, p, am_exit, reason);
+    }
 
     erts_trace_check_exiting(p->id);
 
@@ -8089,6 +8104,8 @@ continue_exit_process(Process *p
     Eterm reason = p->fvalue;
     DistEntry *dep;
     struct saved_calls *scb;
+    process_breakpoint_time_t *pbt;
+
 #ifdef DEBUG
     int yield_allowed = 1;
 #endif
@@ -8228,6 +8245,7 @@ continue_exit_process(Process *p
 	   ? ERTS_PROC_SET_DIST_ENTRY(p, ERTS_PROC_LOCKS_ALL, NULL)
 	   : NULL);
     scb = ERTS_PROC_SET_SAVED_CALLS_BUF(p, ERTS_PROC_LOCKS_ALL, NULL);
+    pbt = ERTS_PROC_SET_CALL_TIME(p, ERTS_PROC_LOCKS_ALL, NULL);
 
     erts_smp_proc_unlock(p, ERTS_PROC_LOCKS_ALL);
     processes_busy--;
@@ -8269,6 +8287,9 @@ continue_exit_process(Process *p
 
     if (scb)
         erts_free(ERTS_ALC_T_CALLS_BUF, (void *) scb);
+
+    if (pbt)
+        erts_free(ERTS_ALC_T_BPD, (void *) pbt);
 
     delete_process(p);
 

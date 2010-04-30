@@ -5852,9 +5852,7 @@ Process *schedule(Process *p, int calls)
 	}
 
 	if (IS_TRACED(p)) {
-	    if (IS_TRACED_FL(p, F_TRACE_CALLS) &&
-		    erts_default_trace_pattern_flags.call_time &&
-		    p->status != P_FREE) {
+	    if (IS_TRACED_FL(p, F_TRACE_CALLS) &&  p->status != P_FREE) {
 		erts_schedule_time_break(p, ERTS_BP_CALL_TIME_SCHEDULE_OUT);
 	    }
 	    switch (p->status) {
@@ -6293,7 +6291,7 @@ Process *schedule(Process *p, int calls)
 		    trace_virtual_sched(p, am_in);
 		break;
 	    }
-	    if (IS_TRACED_FL(p, F_TRACE_CALLS) && erts_default_trace_pattern_flags.call_time) {
+	    if (IS_TRACED_FL(p, F_TRACE_CALLS)) {
 		erts_schedule_time_break(p, ERTS_BP_CALL_TIME_SCHEDULE_IN);
 	    }
 	}
@@ -8050,7 +8048,7 @@ erts_do_exit_process(Process* p, Eterm reason)
 #endif
 
     if (IS_TRACED(p)) {
-	if (IS_TRACED_FL(p, F_TRACE_CALLS) && erts_default_trace_pattern_flags.call_time)
+	if (IS_TRACED_FL(p, F_TRACE_CALLS))
 	    erts_schedule_time_break(p, ERTS_BP_CALL_TIME_SCHEDULE_EXITING);
 
 	if (IS_TRACED_FL(p,F_TRACE_PROCS))

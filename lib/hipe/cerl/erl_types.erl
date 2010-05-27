@@ -398,7 +398,8 @@ t_is_none(_) -> false.
 -spec t_opaque(module(), atom(), [_], erl_type()) -> erl_type().
 
 t_opaque(Mod, Name, Args, Struct) ->
-  ?opaque(set_singleton(#opaque{mod=Mod, name=Name, args=Args, struct=Struct})).
+  O = #opaque{mod = Mod, name = Name, args = Args, struct = Struct},
+  ?opaque(set_singleton(O)).
 
 -spec t_is_opaque(erl_type()) -> boolean().
 
@@ -427,7 +428,7 @@ t_opaque_structure(?opaque(Elements)) ->
 t_opaque_module(?opaque(Elements)) ->
   case ordsets:size(Elements) of
     1 ->
-      [#opaque{mod=Module}] = ordsets:to_list(Elements),
+      [#opaque{mod = Module}] = ordsets:to_list(Elements),
       Module;
     _ -> throw({error, "Unexpected multiple opaque types"})
   end.
@@ -631,7 +632,7 @@ t_unopaque_on_mismatch(GenType, Type, Opaques) ->
   case t_inf(GenType, Type) of
     ?none ->
       Unopaqued = t_unopaque(Type, Opaques),
-      %% Unions might be a problem, must investigate.
+      %% XXX: Unions might be a problem, must investigate.
       case t_inf(GenType, Unopaqued) of
 	?none -> Type;
 	_ -> Unopaqued
@@ -643,10 +644,10 @@ t_unopaque_on_mismatch(GenType, Type, Opaques) ->
 
 module_builtin_opaques(Module) ->
   [O || O <- all_opaque_builtins(), t_opaque_module(O) =:= Module].
-           
+
 %%-----------------------------------------------------------------------------
-%% Remote types
-%% These types are used for preprocessing they should never reach the analysis stage
+%% Remote types: these types are used for preprocessing;
+%% they should never reach the analysis stage.
 
 -spec t_remote(module(), atom(), [_]) -> erl_type().
 
@@ -698,10 +699,7 @@ t_solve_remote_type(#remote{mod = RemMod, name = Name, args = Args} = RemType,
                     R, C) ->
   case dict:find(RemMod, R) of
     error ->
-      Msg = io_lib:format("Cannot locate module ~w to "
-                          "resolve the remote type: ~w:~w()~n",
-                          [RemMod, RemMod, Name]),
-      throw({error, Msg});
+      {t_any(), []};
     {ok, RemDict} ->
       case lookup_type(Name, RemDict) of
         {type, {_Mod, Type, ArgNames}} when length(Args) =:= length(ArgNames) ->
@@ -801,7 +799,7 @@ t_is_none_or_unit(?unit) -> true;
 t_is_none_or_unit(_) -> false.
 
 %%-----------------------------------------------------------------------------
-%% Atoms and the derived type bool
+%% Atoms and the derived type boolean
 %%
 
 -spec t_atom() -> erl_type().
@@ -2523,12 +2521,14 @@ t_subst(T, _Dict, _Fun) ->
 %% Unification
 %%
 
--spec t_unify(erl_type(), erl_type()) -> {erl_type(), [{_, erl_type()}]}.
+-type t_unify_ret() :: {erl_type(), [{_, erl_type()}]}.
+
+-spec t_unify(erl_type(), erl_type()) -> t_unify_ret().
 
 t_unify(T1, T2) ->
   t_unify(T1, T2, []).
 
--spec t_unify(erl_type(), erl_type(), [erl_type()]) -> {erl_type(), [{_, erl_type()}]}.
+-spec t_unify(erl_type(), erl_type(), [erl_type()]) -> t_unify_ret().
 
 t_unify(T1, T2, Opaques) ->
   {T, Dict} = t_unify(T1, T2, dict:new(), Opaques),
@@ -2541,7 +2541,7 @@ t_unify(?var(Id1) = T, ?var(Id2), Dict, Opaques) ->
     error -> 
       case dict:find(Id2, Dict) of
 	error -> {T, dict:store(Id2, T, Dict)};
-	{ok, Type} -> {Type, t_unify(T, Type, Dict, Opaques)}
+	{ok, Type} -> t_unify(T, Type, Dict, Opaques)
       end;
     {ok, Type1} ->
       case dict:find(Id2, Dict) of
@@ -3338,8 +3338,8 @@ sequence([], [], _Delimiter) ->
   [];
 sequence([T], Acc, _Delimiter) ->
   lists:flatten(lists:reverse([T|Acc]));
-sequence([T|Left], Acc, Delimiter) -> 
-  sequence(Left, [T ++ Delimiter|Acc], Delimiter).
+sequence([T|Ts], Acc, Delimiter) ->
+  sequence(Ts, [T ++ Delimiter|Acc], Delimiter).
 
 %%=============================================================================
 %% 

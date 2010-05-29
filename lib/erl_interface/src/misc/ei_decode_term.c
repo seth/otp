@@ -46,11 +46,8 @@ int ei_decode_ei_term(const char* buf, int* index, ei_term* term)
 	term->value.i_val = get32be(s);
 	break;
     case ERL_FLOAT_EXT:
-    	if (s[30]) return -1;
-	if (sscanf(s, "%lf", &f) != 1) return -1;
-	s += 31;
-	term->value.d_val = f;
-	break;
+    case NEW_FLOAT_EXT:
+        return ei_decode_double(buf, index, &term->value.d_val);
     case ERL_ATOM_EXT:
 	len = get16be(s);
 	memcpy(term->value.atom_name, s, len); 

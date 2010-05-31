@@ -411,16 +411,14 @@ protocol_version(tlsv1) ->
     {3, 1};
 protocol_version(sslv3) ->
     {3, 0};
-protocol_version(sslv2) ->
+protocol_version(sslv2) -> %% Backwards compatibility
     {2, 0};
 protocol_version({3, 2}) ->
     'tlsv1.1';
 protocol_version({3, 1}) ->
     tlsv1;
 protocol_version({3, 0}) ->
-    sslv3;
-protocol_version({2, 0}) ->
-    sslv2.
+    sslv3.
 %%--------------------------------------------------------------------
 %% Function: protocol_version(Version1, Version2) -> #protocol_version{}
 %%     Version1 = Version2 = #protocol_version{}
@@ -468,7 +466,7 @@ highest_protocol_version(_, [Version | Rest]) ->
 %%--------------------------------------------------------------------
 supported_protocol_versions() ->
     Fun = fun(Version) ->
-		  protocol_version(Version)
+		  protocol_version(Version) 
 	  end,
     case application:get_env(ssl, protocol_version) of
 	undefined ->
@@ -476,10 +474,17 @@ supported_protocol_versions() ->
 	{ok, []} ->
 	    lists:map(Fun, ?DEFAULT_SUPPORTED_VERSIONS);
 	{ok, Vsns} when is_list(Vsns) ->
-	    lists:map(Fun, Vsns);
+	    Versions = lists:filter(fun is_acceptable_version/1, lists:map(Fun, Vsns)),
+	    supported_protocol_versions(Versions);
 	{ok, Vsn} ->
-	    [Fun(Vsn)]
+	    Versions = lists:filter(fun is_acceptable_version/1, [Fun(Vsn)]),
+	    supported_protocol_versions(Versions)
     end.
+
+supported_protocol_versions([]) ->
+    ?DEFAULT_SUPPORTED_VERSIONS;
+supported_protocol_versions([_|_] = Vsns) ->
+    Vsns.
 
 %%--------------------------------------------------------------------
 %% Function: is_acceptable_version(Version) -> true | false
@@ -512,13 +517,17 @@ decode_cipher_text(CipherText, ConnnectionStates0) ->
     #connection_state{compression_state = CompressionS0,
 		      security_parameters = SecParams} = ReadState0,
     CompressAlg = SecParams#security_parameters.compression_algorithm,
-    {Compressed, ReadState1} = decipher(CipherText, ReadState0),
-    {Plain, CompressionS1} = uncompress(CompressAlg, 
-					Compressed, CompressionS0),
-    ConnnectionStates = ConnnectionStates0#connection_states{
-	     current_read = ReadState1#connection_state{
-			      compression_state = CompressionS1}},
-    {Plain, ConnnectionStates}.
+   case decipher(CipherText, ReadState0) of
+       {Compressed, ReadState1} ->
+	   {Plain, CompressionS1} = uncompress(CompressAlg, 
+					       Compressed, CompressionS0),
+	   ConnnectionStates = ConnnectionStates0#connection_states{
+				 current_read = ReadState1#connection_state{
+						  compression_state = CompressionS1}},
+	   {Plain, ConnnectionStates};
+       #alert{} = Alert ->
+	   Alert
+   end.
 
 %%--------------------------------------------------------------------
 %%% Internal functions
@@ -642,29 +651,37 @@ encode_tls_cipher_text(Type, {MajVer, MinVer}, Fragment) ->
 
 cipher(Type, Version, Fragment, CS0) ->
     Length = erlang:iolist_size(Fragment),
-    {Hash, CS1=#connection_state{cipher_state = CipherS0,
+    {MacHash, CS1=#connection_state{cipher_state = CipherS0,
 				 security_parameters=
 				 #security_parameters{bulk_cipher_algorithm = 
 						      BCA}
 				}} = 
 	hash_and_bump_seqno(CS0, Type, Version, Length, Fragment),
     ?DBG_HEX(Fragment),
-    {Ciphered, CipherS1} = ssl_cipher:cipher(BCA, CipherS0, Hash, Fragment),
+    {Ciphered, CipherS1} = ssl_cipher:cipher(BCA, CipherS0, MacHash, Fragment),
     ?DBG_HEX(Ciphered),
     CS2 = CS1#connection_state{cipher_state=CipherS1},
     {Ciphered, CS2}.
 
 decipher(TLS=#ssl_tls{type=Type, version=Version, fragment=Fragment}, CS0) ->
     SP = CS0#connection_state.security_parameters,
-    BCA = SP#security_parameters.bulk_cipher_algorithm, % eller Cipher?
+    BCA = SP#security_parameters.bulk_cipher_algorithm, 
     HashSz = SP#security_parameters.hash_size,
     CipherS0 = CS0#connection_state.cipher_state,
-    {T, Mac, CipherS1} = ssl_cipher:decipher(BCA, HashSz, CipherS0, Fragment),
-    CS1 = CS0#connection_state{cipher_state = CipherS1},
-    TLength = size(T),
-    {Hash, CS2} = hash_and_bump_seqno(CS1, Type, Version, TLength, Fragment),
-    ok = check_hash(Hash, Mac),
-    {TLS#ssl_tls{fragment = T}, CS2}.
+    case ssl_cipher:decipher(BCA, HashSz, CipherS0, Fragment, Version) of
+	{T, Mac, CipherS1} ->
+	    CS1 = CS0#connection_state{cipher_state = CipherS1},
+	    TLength = size(T),
+	    {MacHash, CS2} = hash_and_bump_seqno(CS1, Type, Version, TLength, T),
+	    case is_correct_mac(Mac, MacHash) of
+		true ->		  
+		    {TLS#ssl_tls{fragment = T}, CS2};
+		false ->
+		    ?ALERT_REC(?FATAL, ?BAD_RECORD_MAC)
+	    end;
+	#alert{} = Alert ->
+	    Alert
+    end.
 
 uncompress(?NULL, Data = #ssl_tls{type = _Type,
 				  version = _Version,
@@ -685,10 +702,13 @@ hash_and_bump_seqno(#connection_state{sequence_number = SeqNo,
 		    Length, Fragment),
     {Hash, CS0#connection_state{sequence_number = SeqNo+1}}.
 
-check_hash(_, _) ->
-    ok. %% TODO check this 
+is_correct_mac(Mac, Mac) ->
+    true;
+is_correct_mac(_M,_H) ->
+    io:format("Mac ~p ~n Hash: ~p~n",[_M, _H]),
+    false.
 
-mac_hash(?NULL, {_,_}, _MacSecret, _SeqNo, _Type,
+mac_hash({_,_}, ?NULL, _MacSecret, _SeqNo, _Type,
 	 _Length, _Fragment) ->
     <<>>;
 mac_hash({3, 0}, MacAlg, MacSecret, SeqNo, Type, Length, Fragment) ->

@@ -148,7 +148,7 @@ behaviour_info(_Other) ->
 	atom() | {atom(), node()} | {global, atom()} | pid().
 
 -type stream_type() :: {'binary', binary()} | {'file', string()}
-		       | {'behaviour', atom()} | 'undefined'.
+		       | {'behaviour', atom(), any()} | 'undefined'.
 
 -record(gstr_state, {
 	  stream_type :: stream_type(),
@@ -302,7 +302,8 @@ pct_complete(Server) ->
 %% Initialize the gen_server state using the gen_stream options.
 %% Any processes needed to generate the data stream are started.
 %% --------------------------------------------------------------------
--spec init({any(), #gstr_state{}}) -> {ok, #gstr_state{consumed::0}}.
+-spec init(#gstr_state{}) -> ignore | {stop, term()}
+				 | {ok, #gstr_state{consumed::0}}.
 
 init(#gstr_state{mod_state=ignore}) ->
     ignore;
@@ -350,7 +351,7 @@ setup_proc_args(#gstr_state{stream_type=ST, source_size=SS, mod_state=MS,
 %% --------------------------------------------------------------------
 -spec handle_call(atom(), from(), #gstr_state{})
 		 -> {reply, {atom(), any()}, #gstr_state{}}
-			| {stop, normal, #gstr_state{}}.
+			| {stop, normal, stopped, #gstr_state{}}.
 
 handle_call(next_block, _From,
 	    #gstr_state{procs=end_of_stream} = State) ->
@@ -434,7 +435,7 @@ handle_info(_Info, State) ->
 %% No shutdown cleanup is necessary, the linked processes will die.
 %% Behaviour modules get a chance to cleanup.
 %% --------------------------------------------------------------------
--spec terminate(any(), #gstr_state{}) -> no_return().
+-spec terminate(any(), #gstr_state{}) -> ok.
 
 terminate(Reason, #gstr_state{stream_type={behaviour, Module, _ModArgs},
 			      mod_state=ModState, procs=Procs}) ->

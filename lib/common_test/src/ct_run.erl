@@ -49,7 +49,7 @@
 %%%-----------------------------------------------------------------
 %%% @spec script_start() -> void()
 %%%
-%%% @doc Start tests via the run_test script.
+%%% @doc Start tests via the run_test program or script.
 %%% 
 %%% <p>Example:<br/><code>./run_test -config config.ctc -dir
 %%% $TEST_DIR</code></p>
@@ -101,11 +101,6 @@ script_start() ->
     Res.
 
 script_start1(Parent, Args) ->
-    case lists:keymember(preload, 1, Args) of
-	true -> preload();
-	false -> ok
-    end,
-
     VtsOrShell = 
 	case lists:keymember(vts, 1, Args) of
 	    true -> 
@@ -208,24 +203,9 @@ script_start1(Parent, Args) ->
 			end
 		end;
 	    false ->    
-		case lists:keysearch(ct_config, 1, Args) of
-		    {value,{ct_config,ConfigFiles}} ->
-			case lists:keysearch(spec, 1, Args) of
-			    false ->
-				case get_configfiles(ConfigFiles, [], LogDir,
-						     EvHandlers) of
-				    ok ->
-					script_start2(VtsOrShell, ConfigFiles,
-						      EvHandlers, Args, LogDir,
-						      Cover);
-				    Error ->
-					Error
-				end;
-			    _ ->
-				script_start2(VtsOrShell, ConfigFiles,
-					      EvHandlers, Args, LogDir, Cover)
-			end;
-		    false ->
+		Config = ct_config:prepare_config_list(Args),
+		case Config of
+		    [] ->
 			case install([{config,[]},
 				      {event_handler,EvHandlers}],
 				     LogDir) of
@@ -234,21 +214,39 @@ script_start1(Parent, Args) ->
 					      Args, LogDir, Cover);
 			    Error ->
 				Error
+			end;
+		    Config ->
+			case lists:keysearch(spec, 1, Args) of
+			    false ->
+				case check_and_install_configfiles(Config,
+						LogDir, EvHandlers) of
+				    ok ->
+					script_start2(VtsOrShell, Config,
+						      EvHandlers, Args, LogDir,
+						      Cover);
+				    Error ->
+					Error
+				end;
+			    _ ->
+				script_start2(VtsOrShell, Config,
+					      EvHandlers, Args, LogDir, Cover)
 			end
 		end
 	end,
     Parent ! {self(), Result}.
 
-get_configfiles([File|Files], Acc, LogDir, EvHandlers) ->
-    case filelib:is_file(File) of
-	true ->
-	    get_configfiles(Files, [?abs(File)|Acc],
-			    LogDir, EvHandlers);
-	false ->
-	    {error,{cant_read_config_file,File}}
-    end;
-get_configfiles([], Acc, LogDir, EvHandlers) ->
-    install([{config,lists:reverse(Acc)}, {event_handler,EvHandlers}], LogDir).
+check_and_install_configfiles(Configs, LogDir, EvHandlers) ->
+    case ct_config:check_config_files(Configs) of
+    false->
+	install([{config,Configs},
+		 {event_handler,EvHandlers}], LogDir);
+    {value, {error, {nofile, File}}} ->
+	{error,{cant_read_config_file,File}};
+    {value, {error, {wrong_config, Message}}}->
+	{error,{wrong_config, Message}};
+    {value, {error, {callback, File}}} ->
+	{error,{cant_load_callback_module,File}}
+    end.
 
 script_start2(false, ConfigFiles, EvHandlers, Args, LogDir, Cover) ->
     case lists:keysearch(spec, 1, Args) of
@@ -275,8 +273,8 @@ script_start2(false, ConfigFiles, EvHandlers, Args, LogDir, Cover) ->
 				   {_,undef} ->     [Cover];
 				   {false,_} ->     [{cover,TSCoverFile}]
 			       end,
-		    case get_configfiles(ConfigFiles++ConfigFiles1,
-					 [], LogDir2,
+		    case check_and_install_configfiles(
+					 ConfigFiles++ConfigFiles1, LogDir2,
 					 EvHandlers++EvHandlers1) of
 			ok ->
 			    {Run,Skip} = ct_testspec:prepare_tests(TS, node()),
@@ -387,7 +385,7 @@ script_start4(shell, _ConfigFiles, _EvHandlers, _Test, _Step, _Args, _LogDir) ->
 
 %%%-----------------------------------------------------------------
 %%% @spec script_usage() -> ok
-%%% @doc Print script usage information for <code>run_test</code>.
+%%% @doc Print usage information for <code>run_test</code>.
 script_usage() ->
     io:format("\n\nUsage:\n\n"),
     io:format("Run tests in web based GUI:\n\n"
@@ -404,6 +402,7 @@ script_usage() ->
 	      "\n\t[-suite Suite1 Suite2 .. SuiteN [-case Case1 Case2 .. CaseN]]"
 	      "\n\t[-step [config | keep_inactive]]"
 	      "\n\t[-config ConfigFile1 ConfigFile2 .. ConfigFileN]"
+	      "\n\t[-userconfig CallbackModule ConfigFile1 .. ConfigFileN]"
 	      "\n\t[-decrypt_key Key] | [-decrypt_file KeyFile]"
 	      "\n\t[-logdir LogDir]"
 	      "\n\t[-silent_connections [ConnType1 ConnType2 .. ConnTypeN]]"
@@ -463,6 +462,7 @@ install(Opts, LogDir) ->
     case whereis(ct_util_server) of
 	undefined ->
 	    VarFile = variables_file_name(LogDir),
+	    %% io:format("Varfile=~p~n", [VarFile]),
 	    case file:open(VarFile, [write]) of
 		{ok,Fd} ->
 		    [io:format(Fd, "~p.\n", [Opt]) || Opt <- Opts],
@@ -534,17 +534,7 @@ run_test1(Opts) ->
 	    {value,{_,LD}} when is_list(LD) -> LD;
 	    false -> "."
 	end,
-    CfgFiles =
-	case lists:keysearch(config, 1, Opts) of
-	    {value,{_,Files=[File|_]}} when is_list(File) ->
-		Files;
-	    {value,{_,File=[C|_]}} when is_integer(C) ->
-		[File];
-	    {value,{_,[]}} ->
-		[];
-	    false ->
-		[]
-	end,
+    CfgFiles = ct_config:get_config_file_list(Opts),
     EvHandlers =
 	case lists:keysearch(event_handler, 1, Opts) of
 	    {value,{_,H}} when is_atom(H) ->
@@ -681,7 +671,7 @@ run_spec_file(LogDir, CfgFiles, EvHandlers, Include, Specs, Relaxed, Cover, Opts
 			   {_,undef} ->  Cover;
 			   {[],_} ->     [{cover,TSCoverFile}]
 		       end,
-	    case get_configfiles(CfgFiles++CfgFiles1, [], LogDir2,
+	    case check_and_install_configfiles(CfgFiles++CfgFiles1, LogDir2,
 				 EvHandlers++EvHandlers1) of
 		ok ->
 		    {Run,Skip} = ct_testspec:prepare_tests(TS, node()),
@@ -694,23 +684,45 @@ run_spec_file(LogDir, CfgFiles, EvHandlers, Include, Specs, Relaxed, Cover, Opts
     end.
 
 run_prepared(LogDir, CfgFiles, EvHandlers, Run, Skip, Cover, Opts) ->
-    case get_configfiles(CfgFiles, [], LogDir, EvHandlers) of
+    case check_and_install_configfiles(CfgFiles, LogDir, EvHandlers) of
 	ok ->
 	    do_run(Run, Skip, Cover, Opts, LogDir);
 	{error,Reason} ->
 	    exit(Reason)
     end.    
 
+check_config_file(Callback, File)->
+    case Callback:check_parameter(File) of
+	{ok, {file, File}}->
+	    ?abs(File);
+	{ok, {config, _}}->
+	    File;
+	{error, {wrong_config, Message}}->
+	    exit({wrong_config, {Callback, Message}});
+	{error, {nofile, File}}->
+	    exit({no_such_file, ?abs(File)})
+    end.
+
 run_dir(LogDir, CfgFiles, EvHandlers, StepOrCover, Opts) ->
     AbsCfgFiles = 
-	lists:map(fun(F) -> 
-			  AbsName = ?abs(F),
-			  case filelib:is_file(AbsName) of
-			      true -> AbsName;
-			      false -> exit({no_such_file,AbsName})
-			  end
-		  end, CfgFiles), 
-
+	lists:map(fun({Callback, FileList})->
+	    case code:is_loaded(Callback) of
+		{file, _Path}->
+		    ok;
+		false->
+		    case code:load_file(Callback) of
+			{module, Callback}->
+			    ok;
+			{error, _}->
+			    exit({no_such_module, Callback})
+		    end
+	    end,
+	    {Callback,
+		lists:map(fun(File)->
+		    check_config_file(Callback, File)
+		end, FileList)}
+	    end,
+	CfgFiles),
     case install([{config,AbsCfgFiles},{event_handler,EvHandlers}], LogDir) of
 	ok -> ok;
 	{error,IReason} -> exit(IReason)
@@ -799,7 +811,7 @@ run_testspec1(TestSpec) ->
 	    CoverOpt = if TSCoverFile == undef -> [];
 			  true -> [{cover,TSCoverFile}]
 		       end,
-	    case get_configfiles(CfgFiles,[],LogDir,EvHandlers) of
+	    case check_and_install_configfiles(CfgFiles,LogDir,EvHandlers) of
 		ok ->
 		    {Run,Skip} = ct_testspec:prepare_tests(TS,node()),
 		    do_run(Run,Skip,CoverOpt,[],LogDir);
@@ -812,6 +824,7 @@ run_testspec1(TestSpec) ->
 get_data_for_node(#testspec{logdir=LogDirs,
 			    cover=CoverFs,
 			    config=Cfgs,
+			    userconfig=UsrCfgs,
 			    event_handler=EvHs,
 			    include=Incl}, Node) ->
     LogDir = case lists:keysearch(Node,1,LogDirs) of
@@ -822,7 +835,8 @@ get_data_for_node(#testspec{logdir=LogDirs,
 		{value,{Node,CovFile}} -> CovFile;
 		false -> undef
 	    end,
-    ConfigFiles = [F || {N,F} <- Cfgs, N==Node],
+    ConfigFiles = [{?ct_config_txt, F} || {N,F} <- Cfgs, N==Node] ++
+		  [CBF || {N, CBF} <- UsrCfgs, N==Node],
     EvHandlers =  [{H,A} || {N,H,A} <- EvHs, N==Node],
     Include =  [I || {N,I} <- Incl, N==Node],
     {LogDir,Cover,ConfigFiles,EvHandlers,Include}.
@@ -1520,8 +1534,8 @@ run_make(Targets, TestDir0, Mod, UserInclude) ->
 				Failure;
 			    MakeInfo ->
 				FileTest = fun(F, suites) -> is_suite(F);
-					      (F, helpmods) -> not is_suite(F);
-					      (_, _) -> true end, 
+					      (F, helpmods) -> not is_suite(F)
+					   end,
 				Files = lists:flatmap(fun({F,out_of_date}) ->
 							      case FileTest(F, Targets) of
 								  true -> [F];
@@ -1760,45 +1774,6 @@ do_trace(Terms) ->
 stop_trace(true) ->
     dbg:stop_clear();
 stop_trace(false) ->
-    ok.
-
-preload() ->
-    io:format("~nLoading Common Test and Test Server modules...~n~n"),
-    preload_mod([ct_logs,
-		 ct_make,
-		 ct_telnet,
-		 ct,
-		 ct_master,
-		 ct_testspec,
-		 ct_cover,
-		 ct_master_event,
-		 ct_util,
-		 ct_event,           
-		 ct_master_logs,
-		 ct_framework,
-		 teln,
-		 ct_ftp,
-		 ct_rpc,
-		 unix_telnet,
-		 ct_gen_conn,
-		 ct_line,
-		 ct_snmp,
-		 test_server_sup,
-		 test_server,
-		 test_server_ctrl,
-		 test_server_h,
-		 test_server_line,
-		 test_server_node]).
-
-preload_mod([M|Ms]) ->
-    case code:is_loaded(M) of
-	false ->
-	    {module,M} = code:load_file(M),
-	    preload_mod(Ms);
-	_ ->
-	    ok
-    end;
-preload_mod([]) ->
     ok.
     
 ensure_atom(Atom) when is_atom(Atom) ->

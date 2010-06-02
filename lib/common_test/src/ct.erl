@@ -59,17 +59,20 @@
 %% Test suite API
 -export([require/1, require/2,
 	 get_config/1, get_config/2, get_config/3,
+	 reload_config/1,
 	 log/1, log/2, log/3,
 	 print/1, print/2, print/3,
 	 pal/1, pal/2, pal/3,
 	 fail/1, comment/1,
 	 testcases/2, userdata/2, userdata/3]).
 
+%% New API for manipulating with config handlers
+-export([add_config/2, remove_config/2]).
+
 %% Other interface functions
 -export([get_status/0, abort_current_testcase/1,
 	 encrypt_config_file/2, encrypt_config_file/3,
 	 decrypt_config_file/2, decrypt_config_file/3]).
-
 
 -export([get_target_name/1]).
 -export([parse_table/1, listenv/1]).
@@ -93,7 +96,7 @@
 %%% <code>install([{config,["config_node.ctc","config_user.ctc"]}])</code>.</p>
 %%%
 %%% <p>Note that this function is automatically run by the
-%%% <code>run_test</code> script.</p>
+%%% <code>run_test</code> program.</p>
 install(Opts) ->
     ct_run:install(Opts).
 
@@ -135,7 +138,8 @@ run(TestDirs) ->
 %%% @spec run_test(Opts) -> Result
 %%%   Opts = [OptTuples]
 %%%   OptTuples = {config,CfgFiles} | {dir,TestDirs} | {suite,Suites} |
-%%%               {testcase,Cases} | {group,Groups} | {spec,TestSpecs} | 
+%%%               {userconfig, Callback, CfgFiles} |
+%%%               {testcase,Cases} | {group,Groups} | {spec,TestSpecs} |
 %%%               {allow_user_terms,Bool} | {logdir,LogDir} | 
 %%%               {silent_connections,Conns} | {cover,CoverSpecFile} | 
 %%%               {step,StepOpts} | {event_handler,EventHandlers} | {include,InclDirs} | 
@@ -165,11 +169,11 @@ run(TestDirs) ->
 %%%   DecryptFile = string()
 %%%   Result = [TestResult] | {error,Reason}
 %%% @doc Run tests as specified by the combination of options in <code>Opts</code>.
-%%% The options are the same as those used with the <code>run_test</code> script.
+%%% The options are the same as those used with the <code>run_test</code> program.
 %%% Note that here a <code>TestDir</code> can be used to point out the path to 
 %%% a <code>Suite</code>. Note also that the option <code>testcase</code>
 %%% corresponds to the <code>-case</code> option in the <code>run_test</code> 
-%%% script. Configuration files specified in <code>Opts</code> will be 
+%%% program. Configuration files specified in <code>Opts</code> will be
 %%% installed automatically at startup.
 run_test(Opts) ->
     ct_run:run_test(Opts).
@@ -211,7 +215,7 @@ step(TestDir,Suite,Case,Opts) ->
 %%%
 %%% <p>From this mode all test case support functions can be executed
 %%% directly from the erlang shell. The interactive mode can also be
-%%% started from the unix command line with <code>run_test -shell
+%%% started from the OS command line with <code>run_test -shell
 %%% [-config File...]</code>.</p>
 %%%
 %%% <p>If any functions using "required config data" (e.g. telnet or
@@ -269,7 +273,7 @@ stop_interactive() ->
 %%% @see get_config/2
 %%% @see get_config/3
 require(Required) ->
-    ct_util:require(Required).
+    ct_config:require(Required).
 
 %%%-----------------------------------------------------------------
 %%% @spec require(Name,Required) -> ok | {error,Reason}
@@ -304,19 +308,19 @@ require(Required) ->
 %%% @see get_config/2
 %%% @see get_config/3
 require(Name,Required) ->
-    ct_util:require(Name,Required).
+    ct_config:require(Name,Required).
 
 %%%-----------------------------------------------------------------
 %%% @spec get_config(Required) -> Value
 %%% @equiv get_config(Required,undefined,[])
 get_config(Required) ->
-    ct_util:get_config(Required,undefined,[]).
+    ct_config:get_config(Required,undefined,[]).
 
 %%%-----------------------------------------------------------------
 %%% @spec get_config(Required,Default) -> Value
 %%% @equiv get_config(Required,Default,[])
 get_config(Required,Default) ->
-    ct_util:get_config(Required,Default,[]).
+    ct_config:get_config(Required,Default,[]).
 
 %%%-----------------------------------------------------------------
 %%% @spec get_config(Required,Default,Opts) -> ValueOrElement
@@ -375,7 +379,26 @@ get_config(Required,Default) ->
 %%% @see require/1
 %%% @see require/2
 get_config(Required,Default,Opts) ->
-    ct_util:get_config(Required,Default,Opts).
+    ct_config:get_config(Required,Default,Opts).
+
+%%%-----------------------------------------------------------------
+%%% @spec reload_config(Required) -> ValueOrElement
+%%%      Required = KeyOrName | {KeyOrName,SubKey}
+%%%      KeyOrName = atom()
+%%%      SubKey = atom()
+%%%      ValueOrElement = term()
+%%%
+%%% @doc Reload config file which contains specified configuration key.
+%%%
+%%% <p>This function performs updating of the configuration data from which the
+%%% given configuration variable was read, and returns the (possibly) new
+%%% value of this variable.</p>
+%%% <p>Note that if some variables were present in the configuration but are not loaded
+%%% using this function, they will be removed from the configuration table together
+%%% with their aliases.</p>
+%%%
+reload_config(Required)->
+    ct_config:reload_config(Required).
 
 %%%-----------------------------------------------------------------
 %%% @spec log(Format) -> ok
@@ -734,7 +757,7 @@ abort_current_testcase(Reason) ->
 %%%      <p>See the <code>crypto</code> application for details on DES3
 %%%      encryption/decryption.</p>
 encrypt_config_file(SrcFileName, EncryptFileName) ->
-    ct_util:encrypt_config_file(SrcFileName, EncryptFileName).
+    ct_config:encrypt_config_file(SrcFileName, EncryptFileName).
 
 %%%-----------------------------------------------------------------
 %%% @spec encrypt_config_file(SrcFileName, EncryptFileName, KeyOrFile) -> 
@@ -754,7 +777,7 @@ encrypt_config_file(SrcFileName, EncryptFileName) ->
 %%%      <p>See the <code>crypto</code> application for details on DES3
 %%%      encryption/decryption.</p>
 encrypt_config_file(SrcFileName, EncryptFileName, KeyOrFile) ->
-    ct_util:encrypt_config_file(SrcFileName, EncryptFileName, KeyOrFile).
+    ct_config:encrypt_config_file(SrcFileName, EncryptFileName, KeyOrFile).
 
 %%%-----------------------------------------------------------------
 %%% @spec decrypt_config_file(EncryptFileName, TargetFileName) -> 
@@ -770,7 +793,7 @@ encrypt_config_file(SrcFileName, EncryptFileName, KeyOrFile) ->
 %%%      <code>.ct_config.crypt</code> in the current directory, or the
 %%%      home directory of the user (it is searched for in that order).</p>
 decrypt_config_file(EncryptFileName, TargetFileName) ->
-    ct_util:decrypt_config_file(EncryptFileName, TargetFileName).
+    ct_config:decrypt_config_file(EncryptFileName, TargetFileName).
 
 %%%-----------------------------------------------------------------
 %%% @spec decrypt_config_file(EncryptFileName, TargetFileName, KeyOrFile) -> 
@@ -785,5 +808,33 @@ decrypt_config_file(EncryptFileName, TargetFileName) ->
 %%%      file contents is saved in the target file. The key must have the
 %%%      the same value as that used for encryption.</p>
 decrypt_config_file(EncryptFileName, TargetFileName, KeyOrFile) ->
-    ct_util:decrypt_config_file(EncryptFileName, TargetFileName, KeyOrFile).
+    ct_config:decrypt_config_file(EncryptFileName, TargetFileName, KeyOrFile).
 
+
+%%%-----------------------------------------------------------------
+%%% @spec add_config(Callback, Config) ->
+%%%                                       ok | {error, Reason}
+%%%       Callback = atom()
+%%%       Config = string()
+%%%       Reason = term()
+%%%
+%%% @doc <p>This function loads configuration variables using the
+%%% 	 given callback module and configuration string. Callback module
+%%%	 should be either loaded or present in the code part. Loaded
+%%%	 configuration variables can later be removed using
+%%%	 <code>remove_config/2</code> function.</p>
+add_config(Callback, Config)->
+    ct_config:add_config(Callback, Config).
+
+%%%-----------------------------------------------------------------
+%%% @spec remove_config(Callback, Config) ->
+%%%                                          ok
+%%%       Callback = atom()
+%%%       Config = string()
+%%%       Reason = term()
+%%%
+%%% @doc <p>This function removes configuration variables (together with
+%%%	 their aliases) which were loaded with specified callback module and
+%%%	 configuration string.</p>
+remove_config(Callback, Config)->
+    ct_config:remove_config(Callback, Config).

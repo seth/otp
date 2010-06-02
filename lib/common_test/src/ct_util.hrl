@@ -29,9 +29,11 @@
 
 -record(testspec, {spec_dir,
 	           nodes=[],
+		   init=[],
 		   logdir=["."],
 		   cover=[],
 		   config=[],
+		   userconfig=[],
 		   event_handler=[],
 		   include=[],
 		   alias=[],
@@ -50,3 +52,4 @@
 -define(CT_MEVMGR_REF, ct_master_event).
 
 -define(missing_suites_info, "missing_suites.info").
+-define(ct_config_txt, ct_config_plain).
